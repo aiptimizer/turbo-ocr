@@ -45,7 +45,7 @@ docker run --gpus all -p 8000:8000 -p 50051:50051 turbo-ocr
 Or pull the prebuilt image:
 
 ```bash
-docker run --gpus all -p 8000:8000 -p 50051:50051 ghcr.io/aiptamize/turbo-ocr:v1.0.0
+docker run --gpus all -p 8000:8000 -p 50051:50051 ghcr.io/aiptimizer/turbo-ocr:v1.0.0
 ```
 
 TensorRT engines are built on first startup (few minutes, cached after). Subsequent starts are instant.

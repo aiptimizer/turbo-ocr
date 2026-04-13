@@ -74,7 +74,7 @@ docker run --gpus all -p 8000:8000 -p 50051:50051 \
   ghcr.io/aiptimizer/turbo-ocr:v1.3.0
 ```
 
-First startup builds TensorRT engines from ONNX (~90s). The volume caches them for instant restarts.
+First startup builds TensorRT engines from ONNX (~90s). The volume caches them for instant restarts. nginx (port 8000) reverse-proxies to Drogon (port 8080) for connection buffering — both start automatically.
 
 ```bash
 curl -X POST http://localhost:8000/ocr/raw \
@@ -102,6 +102,8 @@ HTTP on port 8000, gRPC on port 50051 — single binary, shared GPU pipeline poo
 | Endpoint | Input | Description |
 |----------|-------|-------------|
 | `/health` | — | Returns `"ok"` |
+| `/health/live` | — | Kubernetes liveness probe |
+| `/health/ready` | — | Readiness probe — verifies GPU pipeline is responsive |
 | `/ocr/raw` | Raw image bytes | Fastest path — PNG, JPEG, etc. |
 | `/ocr` | `{"image": "<base64>"}` | For clients that can only send JSON |
 | `/ocr/batch` | `{"images": ["<b64>", ...]}` | Multiple images in one request |
@@ -277,7 +279,10 @@ Reproduce: `python tests/benchmark/comparison/bench_turbo_ocr.py` (requires runn
 | `DET_MAX_SIDE` | `960` | Max detection input size |
 | `PORT` / `GRPC_PORT` | `8000` / `50051` | Server ports |
 | `PDF_DAEMONS` / `PDF_WORKERS` | `16` / `4` | PDF render parallelism |
-| `HTTP_THREADS` | `pool * 4` | HTTP worker threads |
+| `HTTP_THREADS` | `pool * 32` | Work pool threads for blocking inference |
+| `MAX_PDF_PAGES` | `2000` | Maximum pages per PDF request |
+| `LOG_LEVEL` | `info` | Log level: `debug` / `info` / `warn` / `error` |
+| `LOG_FORMAT` | `json` | Log format: `json` (structured) / `text` (human-readable) |
 
 Layout detection is **enabled by default**. The model is loaded at startup but only runs when a request includes `?layout=1`. Requests without `?layout=1` have zero overhead. Requests with `?layout=1` reduce throughput by ~20%. Set `DISABLE_LAYOUT=1` to skip loading the model entirely and save ~300-500 MB VRAM.
 
@@ -308,6 +313,7 @@ turbo_ocr_gpu_vram_total_bytes 33661911040
 turbo_ocr_pipeline_pool_size 5
 turbo_ocr_pool_exhaustions_total 0
 turbo_ocr_request_bytes_total 49493243
+turbo_ocr_request_body_avg_bytes 9407
 ```
 
 ### Response Headers
@@ -336,7 +342,7 @@ All error responses return JSON with `Content-Type: application/json`:
 {"error": {"code": "EMPTY_BODY", "message": "Empty body"}}
 ```
 
-Error codes: `EMPTY_BODY`, `INVALID_JSON`, `MISSING_IMAGE`, `BASE64_DECODE_FAILED`, `IMAGE_DECODE_FAILED`, `INVALID_PARAMETER`, `INVALID_DPI`, `INVALID_DIMENSIONS`, `DIMENSIONS_TOO_LARGE`, `BODY_SIZE_MISMATCH`, `MISSING_HEADER`, `INVALID_HEADER`, `EMPTY_BATCH`, `MISSING_FILE`, `MISSING_PDF`, `INVALID_MULTIPART`, `PDF_RENDER_FAILED`, `PDF_TOO_LARGE`, `EMPTY_PDF`, `SERVER_BUSY`, `INFERENCE_ERROR`.
+Error codes: `EMPTY_BODY`, `INVALID_JSON`, `MISSING_IMAGE`, `BASE64_DECODE_FAILED`, `IMAGE_DECODE_FAILED`, `INVALID_PARAMETER`, `UNSUPPORTED_PARAMETER`, `INVALID_DPI`, `INVALID_DIMENSIONS`, `DIMENSIONS_TOO_LARGE`, `BODY_SIZE_MISMATCH`, `MISSING_HEADER`, `INVALID_HEADER`, `EMPTY_BATCH`, `MISSING_FILE`, `MISSING_PDF`, `INVALID_MULTIPART`, `PDF_RENDER_FAILED`, `PDF_TOO_LARGE`, `EMPTY_PDF`, `SERVER_BUSY`, `NOT_READY`, `INFERENCE_ERROR`.
 
 ---
 

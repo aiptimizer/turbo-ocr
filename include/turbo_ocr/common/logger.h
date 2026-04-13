@@ -257,8 +257,9 @@ void log_msg(Level lvl, std::string_view msg, KVs &&...kvs) {
 } // namespace turbo_ocr::log
 
 // ── Convenience macros ─────────────────────────────────────────────────
+// Prefixed with TOCR_ to avoid collision with Drogon/trantor's LOG_* macros.
 
-#define LOG_DEBUG(msg, ...) ::turbo_ocr::log::log_msg(::turbo_ocr::log::Level::Debug, msg, ##__VA_ARGS__)
-#define LOG_INFO(msg, ...)  ::turbo_ocr::log::log_msg(::turbo_ocr::log::Level::Info,  msg, ##__VA_ARGS__)
-#define LOG_WARN(msg, ...)  ::turbo_ocr::log::log_msg(::turbo_ocr::log::Level::Warn,  msg, ##__VA_ARGS__)
-#define LOG_ERROR(msg, ...) ::turbo_ocr::log::log_msg(::turbo_ocr::log::Level::Error, msg, ##__VA_ARGS__)
+#define TOCR_LOG_DEBUG(msg, ...) ::turbo_ocr::log::log_msg(::turbo_ocr::log::Level::Debug, msg, ##__VA_ARGS__)
+#define TOCR_LOG_INFO(msg, ...)  ::turbo_ocr::log::log_msg(::turbo_ocr::log::Level::Info,  msg, ##__VA_ARGS__)
+#define TOCR_LOG_WARN(msg, ...)  ::turbo_ocr::log::log_msg(::turbo_ocr::log::Level::Warn,  msg, ##__VA_ARGS__)
+#define TOCR_LOG_ERROR(msg, ...) ::turbo_ocr::log::log_msg(::turbo_ocr::log::Level::Error, msg, ##__VA_ARGS__)

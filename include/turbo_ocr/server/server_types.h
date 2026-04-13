@@ -127,10 +127,10 @@ void run_with_error_handling(DrogonCallback &cb, const char *route, F &&fn) {
   } catch (const turbo_ocr::ImageDecodeError &e) {
     cb(error_response(drogon::k400BadRequest, "IMAGE_DECODE_FAILED", e.what()));
   } catch (const std::exception &e) {
-    LOG_ERROR("Inference error", "route", std::string_view(route), "error", std::string_view(e.what()));
+    TOCR_LOG_ERROR("Inference error", "route", std::string_view(route), "error", std::string_view(e.what()));
     cb(error_response(drogon::k500InternalServerError, "INFERENCE_ERROR", "Inference error"));
   } catch (...) {
-    LOG_ERROR("Inference error: unknown exception", "route", std::string_view(route));
+    TOCR_LOG_ERROR("Inference error: unknown exception", "route", std::string_view(route));
     cb(error_response(drogon::k500InternalServerError, "INFERENCE_ERROR", "Inference error"));
   }
 }

@@ -28,7 +28,7 @@ using turbo_ocr::results_to_json;
 using turbo_ocr::server::env_or;
 
 int main() {
-  LOG_INFO("PaddleOCR CPU-Only Mode (ONNX Runtime)");
+  TOCR_LOG_INFO("PaddleOCR CPU-Only Mode (ONNX Runtime)");
 
   auto det_model = env_or("DET_MODEL", "models/det.onnx");
   auto rec_model = env_or("REC_MODEL", "models/rec.onnx");
@@ -36,7 +36,7 @@ int main() {
   auto cls_model = env_or("CLS_MODEL", "models/cls.onnx");
   if (turbo_ocr::server::env_enabled("DISABLE_ANGLE_CLS")) {
     cls_model.clear();
-    LOG_INFO("Angle classification disabled via DISABLE_ANGLE_CLS=1");
+    TOCR_LOG_INFO("Angle classification disabled via DISABLE_ANGLE_CLS=1");
   }
 
   // Layout model (CPU via ONNX Runtime) — on by default
@@ -48,7 +48,7 @@ int main() {
   if (const char *env = std::getenv("PIPELINE_POOL_SIZE"))
     pool_size = std::max(1, std::atoi(env));
 
-  LOG_INFO("CPU pipeline pool size", "pool_size", pool_size);
+  TOCR_LOG_INFO("CPU pipeline pool size", "pool_size", pool_size);
   auto pool = turbo_ocr::pipeline::make_cpu_pipeline_pool(
       pool_size, det_model, rec_model, rec_dict, cls_model);
 
@@ -58,17 +58,17 @@ int main() {
     for (size_t i = 0; i < static_cast<size_t>(pool_size); ++i) {
       auto handle = pool->acquire();
       if (!handle->load_layout_model(layout_model)) {
-        LOG_WARN("Layout model not found; layout disabled");
+        TOCR_LOG_WARN("Layout model not found; layout disabled");
         all_ok = false;
         break;
       }
     }
     if (all_ok) {
       layout_available = true;
-      LOG_INFO("Layout detection enabled (CPU/ONNX Runtime)");
+      TOCR_LOG_INFO("Layout detection enabled (CPU/ONNX Runtime)");
     }
   } else if (layout_disabled) {
-    LOG_INFO("Layout detection disabled");
+    TOCR_LOG_INFO("Layout detection disabled");
   }
 
   turbo_ocr::server::InferFunc infer =
@@ -167,7 +167,7 @@ int main() {
   if (const char *env = std::getenv("PDF_WORKERS"))
     pdf_workers = std::max(1, std::atoi(env));
   turbo_ocr::render::PdfRenderer pdf_renderer(pdf_daemons, pdf_workers);
-  LOG_INFO("PDF renderer initialized", "daemons", pdf_daemons, "workers", pdf_workers);
+  TOCR_LOG_INFO("PDF renderer initialized", "daemons", pdf_daemons, "workers", pdf_workers);
   turbo_ocr::pdf::ensure_pdfium_initialized();
 
   turbo_ocr::pdf::PdfMode default_pdf_mode = turbo_ocr::pdf::PdfMode::Ocr;
@@ -241,11 +241,11 @@ int main() {
                     batch_results[idx] = handle->run(imgs[idx]);
                   }
                 } catch (const turbo_ocr::PoolExhaustedError &) {
-                  LOG_ERROR("Batch worker error: pool exhausted", "route", "/ocr/batch");
+                  TOCR_LOG_ERROR("Batch worker error: pool exhausted", "route", "/ocr/batch");
                 } catch (const std::exception &e) {
-                  LOG_ERROR("Batch worker error", "route", "/ocr/batch", "error", std::string_view(e.what()));
+                  TOCR_LOG_ERROR("Batch worker error", "route", "/ocr/batch", "error", std::string_view(e.what()));
                 } catch (...) {
-                  LOG_ERROR("Batch worker error: unknown exception", "route", "/ocr/batch");
+                  TOCR_LOG_ERROR("Batch worker error: unknown exception", "route", "/ocr/batch");
                 }
               });
             }
@@ -276,7 +276,7 @@ int main() {
   if (const char *env = std::getenv("PORT"))
     port = std::max(1, std::atoi(env));
 
-  LOG_INFO("Starting CPU-Only OCR Server", "port", port, "grpc_port", grpc_port);
+  TOCR_LOG_INFO("Starting CPU-Only OCR Server", "port", port, "grpc_port", grpc_port);
 
   drogon::app()
       .addListener("0.0.0.0", port)

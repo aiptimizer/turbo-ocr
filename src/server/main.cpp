@@ -40,7 +40,7 @@ int main() {
       env_or("CLS_ONNX", "models/cls.onnx"), "cls");
   if (turbo_ocr::server::env_enabled("DISABLE_ANGLE_CLS")) {
     cls_model.clear();
-    LOG_INFO("Angle classification disabled via DISABLE_ANGLE_CLS=1");
+    TOCR_LOG_INFO("Angle classification disabled via DISABLE_ANGLE_CLS=1");
   }
 
   // Optional PP-DocLayoutV3 stage. ON by default — users can disable with
@@ -52,27 +52,27 @@ int main() {
   if (!layout_disabled) {
     if (auto *pre = std::getenv("LAYOUT_TRT"); pre && *pre) {
       layout_model = pre;
-      LOG_INFO("Layout detection enabled", "engine", std::string_view(layout_model));
+      TOCR_LOG_INFO("Layout detection enabled", "engine", std::string_view(layout_model));
     } else {
       layout_model = turbo_ocr::engine::ensure_trt_engine(
           env_or("LAYOUT_ONNX", "models/layout/layout.onnx"), "layout");
       if (layout_model.empty()) {
-        LOG_WARN("Layout model (layout.onnx) not found; layout stage will be disabled");
+        TOCR_LOG_WARN("Layout model (layout.onnx) not found; layout stage will be disabled");
       } else {
-        LOG_INFO("Layout detection enabled");
+        TOCR_LOG_INFO("Layout detection enabled");
       }
     }
   } else {
-    LOG_INFO("Layout detection disabled (set DISABLE_LAYOUT=0 to enable)");
+    TOCR_LOG_INFO("Layout detection disabled (set DISABLE_LAYOUT=0 to enable)");
   }
 
   // PDF extraction mode default
   turbo_ocr::pdf::PdfMode default_pdf_mode = turbo_ocr::pdf::PdfMode::Ocr;
   if (auto *m = std::getenv("ENABLE_PDF_MODE"); m && *m) {
     default_pdf_mode = turbo_ocr::pdf::parse_pdf_mode(m);
-    LOG_INFO("PDF extraction default mode configured", "mode", turbo_ocr::pdf::mode_name(default_pdf_mode));
+    TOCR_LOG_INFO("PDF extraction default mode configured", "mode", turbo_ocr::pdf::mode_name(default_pdf_mode));
   } else {
-    LOG_INFO("PDF extraction default mode: ocr (override per-request with /ocr/pdf?mode=<geometric|auto|auto_verified>)");
+    TOCR_LOG_INFO("PDF extraction default mode: ocr (override per-request with /ocr/pdf?mode=<geometric|auto|auto_verified>)");
   }
   turbo_ocr::pdf::ensure_pdfium_initialized();
 
@@ -88,7 +88,7 @@ int main() {
       else if (vram_gb >= 12) pool_size = 3;
       else if (vram_gb >= 8)  pool_size = 2;
       else                     pool_size = 1;
-      LOG_INFO("Auto-detected pipeline pool size", "pool_size", pool_size, "vram_gb", vram_gb);
+      TOCR_LOG_INFO("Auto-detected pipeline pool size", "pool_size", pool_size, "vram_gb", vram_gb);
     }
   }
 
@@ -102,16 +102,16 @@ int main() {
   if (const char *env = std::getenv("PDF_WORKERS"))
     pdf_workers = std::max(1, std::atoi(env));
   PdfRenderer pdf_renderer(pdf_daemons, pdf_workers);
-  LOG_INFO("PDF renderer initialized", "daemons", pdf_daemons, "workers", pdf_workers);
+  TOCR_LOG_INFO("PDF renderer initialized", "daemons", pdf_daemons, "workers", pdf_workers);
 
   // nvJPEG
-  LOG_INFO("Initializing nvJPEG decoders");
+  TOCR_LOG_INFO("Initializing nvJPEG decoders");
   thread_local NvJpegDecoder tl_nvjpeg;
   bool nvjpeg_available = tl_nvjpeg.available();
   if (nvjpeg_available)
-    LOG_INFO("nvJPEG GPU-accelerated JPEG decode enabled");
+    TOCR_LOG_INFO("nvJPEG GPU-accelerated JPEG decode enabled");
   else
-    LOG_WARN("nvJPEG not available, using OpenCV JPEG decode");
+    TOCR_LOG_WARN("nvJPEG not available, using OpenCV JPEG decode");
 
   // Image decoder: JPEG via nvJPEG, PNG via Wuffs
   turbo_ocr::server::ImageDecoder decode =
@@ -170,7 +170,7 @@ int main() {
     port = std::max(1, std::atoi(env));
   int io_threads = std::max(pool_size, 4);
 
-  LOG_INFO("HTTP server starting", "port", port, "io_threads", io_threads,
+  TOCR_LOG_INFO("HTTP server starting", "port", port, "io_threads", io_threads,
            "work_threads", work_threads, "pool_size", dispatcher->worker_count());
 
   drogon::app()

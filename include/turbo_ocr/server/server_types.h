@@ -1,13 +1,21 @@
 #pragma once
 
+#include <chrono>
 #include <climits>
+#include <cstring>
 #include <format>
 #include <functional>
+#include <iostream>
+#include <memory>
+#include <random>
 #include <string>
 #include <vector>
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
+
+#include <drogon/HttpRequest.h>
+#include <drogon/HttpResponse.h>
 
 #include "turbo_ocr/common/encoding.h"
 #include "turbo_ocr/common/errors.h"
@@ -15,7 +23,6 @@
 #include "turbo_ocr/common/types.h"
 #include "turbo_ocr/decode/fast_png_decoder.h"
 #include "turbo_ocr/layout/layout_types.h"
-#include "crow/crow_all.h"
 
 namespace turbo_ocr::server {
 
@@ -31,7 +38,141 @@ using ImageDecoder = std::function<cv::Mat(const unsigned char *data, size_t len
 /// Inference function: given cv::Mat + layout flag, run OCR pipeline.
 using InferFunc = std::function<InferResult(const cv::Mat &, bool want_layout)>;
 
-/// Default CPU-only image decoder: JPEG (OpenCV) and PNG (Wuffs).
+/// Drogon callback alias.
+using DrogonCallback = std::function<void(const drogon::HttpResponsePtr &)>;
+
+// ── UUID v7 (timestamp-ordered, ~50ns) ──────────────────────────────────
+
+[[nodiscard]] inline std::string generate_uuid_v7() {
+  auto ms = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch())
+          .count());
+
+  thread_local std::mt19937_64 rng(std::random_device{}());
+  uint64_t rand_a = rng();
+  uint64_t rand_b = rng();
+
+  uint8_t u[16];
+  u[0]  = (ms >> 40) & 0xFF;
+  u[1]  = (ms >> 32) & 0xFF;
+  u[2]  = (ms >> 24) & 0xFF;
+  u[3]  = (ms >> 16) & 0xFF;
+  u[4]  = (ms >> 8)  & 0xFF;
+  u[5]  = ms & 0xFF;
+  std::memcpy(u + 6, &rand_a, 2);
+  std::memcpy(u + 8, &rand_b, 8);
+  u[6] = (u[6] & 0x0F) | 0x70;   // version 7
+  u[8] = (u[8] & 0x3F) | 0x80;   // variant 10
+
+  char buf[37];
+  std::snprintf(buf, sizeof(buf),
+      "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+      u[0],u[1],u[2],u[3],u[4],u[5],u[6],u[7],
+      u[8],u[9],u[10],u[11],u[12],u[13],u[14],u[15]);
+  return std::string(buf, 36);
+}
+
+// ── Response helpers ────────────────────────────────────────────────────
+
+/// Structured JSON error response: {"error":{"code":"...","message":"..."}}
+[[nodiscard]] inline drogon::HttpResponsePtr error_response(
+    drogon::HttpStatusCode status, const char *code, std::string message) {
+  std::string body;
+  body.reserve(64 + std::strlen(code) + message.size());
+  body += R"({"error":{"code":")";
+  body += code;
+  body += R"(","message":")";
+  // Escape quotes in message
+  for (char c : message) {
+    if (c == '"') body += "\\\"";
+    else if (c == '\\') body += "\\\\";
+    else body += c;
+  }
+  body += R"("}})";
+  auto resp = drogon::HttpResponse::newHttpResponse();
+  resp->setStatusCode(status);
+  resp->setBody(std::move(body));
+  resp->setContentTypeString("application/json");
+  return resp;
+}
+
+/// Plain-text response (for /health and non-error uses).
+[[nodiscard]] inline drogon::HttpResponsePtr make_response(
+    drogon::HttpStatusCode code, std::string body) {
+  auto resp = drogon::HttpResponse::newHttpResponse();
+  resp->setStatusCode(code);
+  resp->setBody(std::move(body));
+  return resp;
+}
+
+/// JSON success response.
+[[nodiscard]] inline drogon::HttpResponsePtr json_response(std::string json_str) {
+  auto resp = drogon::HttpResponse::newHttpResponse();
+  resp->setStatusCode(drogon::k200OK);
+  resp->setBody(std::move(json_str));
+  resp->setContentTypeString("application/json");
+  return resp;
+}
+
+// ── Error handling wrapper ──────────────────────────────────────────────
+
+template <typename F>
+void run_with_error_handling(DrogonCallback &cb, const char *route, F &&fn) {
+  try {
+    fn();
+  } catch (const turbo_ocr::PoolExhaustedError &e) {
+    cb(error_response(drogon::k503ServiceUnavailable, "SERVER_BUSY", e.what()));
+  } catch (const turbo_ocr::ImageDecodeError &e) {
+    cb(error_response(drogon::k400BadRequest, "IMAGE_DECODE_FAILED", e.what()));
+  } catch (const std::exception &e) {
+    std::cerr << std::format("[{}] Inference error: {}\n", route, e.what());
+    cb(error_response(drogon::k500InternalServerError, "INFERENCE_ERROR", "Inference error"));
+  } catch (...) {
+    std::cerr << std::format("[{}] Inference error: unknown exception\n", route);
+    cb(error_response(drogon::k500InternalServerError, "INFERENCE_ERROR", "Inference error"));
+  }
+}
+
+} // namespace turbo_ocr::server
+
+#include "turbo_ocr/server/work_pool.h"
+
+namespace turbo_ocr::server {
+
+// ── Work submission with observability ──────────────────────────────────
+
+/// Submit blocking work to a WorkPool with automatic:
+///   - X-Request-Id header (UUID v7)
+///   - X-Inference-Time-Ms header
+///   - Retry-After header on 503
+///   - Safe callback lifetime (shared_ptr)
+template <typename F>
+void submit_work(WorkPool &pool, DrogonCallback &&callback, F &&work) {
+  auto req_id = generate_uuid_v7();
+  auto t0 = std::chrono::steady_clock::now();
+
+  // Wrap the original callback to inject headers on every response.
+  auto cb = std::make_shared<DrogonCallback>(
+      [orig = std::move(callback), req_id, t0](const drogon::HttpResponsePtr &resp) {
+        resp->addHeader("X-Request-Id", req_id);
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t0).count();
+        resp->addHeader("X-Inference-Time-Ms", std::to_string(ms));
+        if (resp->statusCode() == drogon::k503ServiceUnavailable)
+          resp->addHeader("Retry-After", "1");
+        orig(resp);
+      });
+
+  try {
+    pool.submit([cb, w = std::forward<F>(work)]() mutable { w(*cb); });
+  } catch (const turbo_ocr::PoolExhaustedError &e) {
+    (*cb)(error_response(drogon::k503ServiceUnavailable, "SERVER_BUSY", e.what()));
+  }
+}
+
+// ── Utilities ───────────────────────────────────────────────────────────
+
 [[nodiscard]] inline cv::Mat cpu_decode_image(const unsigned char *data, size_t len) {
   if (len >= 2 && data[0] == 0xFF && data[1] == 0xD8) {
     if (len > static_cast<size_t>(INT_MAX)) return {};
@@ -45,13 +186,12 @@ using InferFunc = std::function<InferResult(const cv::Mat &, bool want_layout)>;
   return {};
 }
 
-/// Parse `?layout=0|1|on|off|true|false|yes|no` from a Crow request.
-[[nodiscard]] inline std::string parse_layout_query(const crow::request &req,
+[[nodiscard]] inline std::string parse_layout_query(const drogon::HttpRequestPtr &req,
                                                      bool layout_available,
                                                      bool *out) {
   *out = false;
-  const char *v = req.url_params.get("layout");
-  if (!v || !*v) return {};
+  auto v = req->getParameter("layout");
+  if (v.empty()) return {};
   std::string s(v);
   for (char &c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   bool on;

@@ -106,6 +106,12 @@ public:
         return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                             "Invalid dimensions or channels for pixels input");
 
+      constexpr int kMaxPixelDim = 16384;
+      if (width > kMaxPixelDim || height > kMaxPixelDim)
+        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+            std::format("Dimensions {}x{} exceed maximum of {}x{}",
+                        width, height, kMaxPixelDim, kMaxPixelDim));
+
       size_t expected = static_cast<size_t>(width) * height * channels;
       if (request->pixels().size() != expected)
         return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
@@ -119,6 +125,8 @@ public:
         auto out = run_infer(img, want_layout);
         fill_response(response, out.results, out.layout);
         return grpc::Status::OK;
+      } catch (const turbo_ocr::PoolExhaustedError &e) {
+        return grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED, e.what());
       } catch (const std::exception &e) {
         std::cerr << std::format("[gRPC] Pixels inference error: {}\n", e.what());
         return grpc::Status(grpc::StatusCode::INTERNAL, "Inference error");
@@ -137,6 +145,8 @@ public:
       auto out = run_infer(img, want_layout);
       fill_response(response, out.results, out.layout);
       return grpc::Status::OK;
+    } catch (const turbo_ocr::PoolExhaustedError &e) {
+      return grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED, e.what());
     } catch (const std::exception &e) {
       std::cerr << std::format("[gRPC] Inference error: {}\n", e.what());
       return grpc::Status(grpc::StatusCode::INTERNAL, "Inference error");

@@ -1,8 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-# TRT engines are automatically built from ONNX on first startup
-# by the C++ binary (cached by TRT version + model hash).
-# No Python or manual conversion needed.
+# Start nginx reverse proxy (absorbs connection storms, keep-alive to Drogon)
+nginx -c /app/docker/nginx.conf
 
-exec "$@"
+# Drop to non-root user and run the OCR server
+# TRT engines are auto-built from ONNX on first startup (cached by TRT version + model hash)
+exec gosu ocr "$@"

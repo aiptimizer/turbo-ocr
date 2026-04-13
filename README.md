@@ -92,6 +92,8 @@ curl -X POST http://localhost:8000/ocr/raw \
 
 HTTP on port 8000, gRPC on port 50051 — single binary, shared GPU pipeline pool.
 
+> **Important:** Use persistent connections (HTTP keep-alive). Sending many short-lived connections (e.g. one `curl` per request in a loop) can overwhelm the server and cause it to stall. All standard HTTP client libraries (`requests.Session`, `aiohttp`, Go `http.Client`, etc.) reuse connections by default.
+
 ### Endpoints
 
 | Endpoint | Input | Description |
@@ -279,10 +281,11 @@ docker run --gpus all -p 8000:8000 \
 | GCC 13.3+ / C++20 | x | x |
 | CUDA + TensorRT 10.2+ | x | |
 | OpenCV 4.x | x | x |
+| Drogon 1.9+ | x | x |
 | gRPC + Protobuf | x | |
 | ONNX Runtime 1.22+ | | x |
 
-Crow, Wuffs, Clipper, PDFium vendored in `third_party/`.
+Wuffs, Clipper, PDFium vendored in `third_party/`.
 
 ```bash
 # Docker (recommended)
@@ -311,7 +314,7 @@ Latin script (English, German, French, Italian, Polish, Czech, and more) plus Gr
 This project builds on the work of several open-source projects:
 
 - **[PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR)** (Baidu) — PP-OCRv5 detection, recognition, and classification models. PP-DocLayoutV3 layout detection model. This project would not exist without their research and pre-trained weights.
-- **[Crow](https://crowcpp.org)** — lightweight C++ HTTP framework (vendored)
+- **[Drogon](https://drogon.org)** — high-performance async C++ HTTP framework
 - **[Wuffs](https://github.com/google/wuffs)** — fast PNG decoder by Google (vendored)
 - **[PDFium](https://pdfium.googlesource.com/pdfium/)** — PDF rendering and text extraction (vendored)
 - **[Clipper](http://www.angusj.com/delphi/clipper.php)** — polygon clipping for text detection post-processing (vendored)

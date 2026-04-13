@@ -27,6 +27,30 @@ if(ENABLE_TSAN)
 endif()
 
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
+find_package(Drogon CONFIG REQUIRED)
+
+# c-ares is a transitive dependency of gRPC's cmake config.  The apt
+# package provides only pkg-config, not cmake config, so we create the
+# imported target manually if cmake can't find it.
+find_package(c-ares CONFIG QUIET)
+if(NOT c-ares_FOUND AND NOT TARGET c-ares::cares)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(_CARES QUIET libcares)
+    endif()
+    add_library(c-ares::cares INTERFACE IMPORTED)
+    if(_CARES_FOUND)
+        set_target_properties(c-ares::cares PROPERTIES
+            INTERFACE_INCLUDE_DIRECTORIES "${_CARES_INCLUDE_DIRS}"
+            INTERFACE_LINK_LIBRARIES "${_CARES_LINK_LIBRARIES}")
+    else()
+        find_library(_CARES_LIB cares)
+        if(_CARES_LIB)
+            set_target_properties(c-ares::cares PROPERTIES
+                INTERFACE_LINK_LIBRARIES "${_CARES_LIB}")
+        endif()
+    endif()
+endif()
 
 # --- Shared library: turbo_ocr_common ---
 add_library(turbo_ocr_common STATIC
@@ -136,6 +160,7 @@ if(USE_CPU_ONLY)
     target_include_directories(paddle_cpu_server PRIVATE ${PROTO_GEN_DIR})
     target_link_libraries(paddle_cpu_server PRIVATE
         turbo_ocr_cpu
+        Drogon::Drogon
         ${GRPC_LIBRARIES}
         protobuf::libprotobuf
     )
@@ -238,6 +263,7 @@ else()
     target_include_directories(paddle_highspeed_cpp PRIVATE ${PROTO_GEN_DIR})
     target_link_libraries(paddle_highspeed_cpp PRIVATE
         turbo_ocr_gpu
+        Drogon::Drogon
         ${GRPC_LIBRARIES}
         protobuf::libprotobuf
     )

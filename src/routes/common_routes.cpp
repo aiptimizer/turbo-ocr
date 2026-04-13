@@ -1,111 +1,122 @@
 #include "turbo_ocr/routes/common_routes.h"
 
-#include <format>
-#include <iostream>
+#include <drogon/HttpAppFramework.h>
+#include <json/json.h>
 
 namespace turbo_ocr::routes {
 
-void register_health_route(crow::SimpleApp &app) {
-  CROW_ROUTE(app, "/health")
-      .methods(crow::HTTPMethod::Get)([](const crow::request &) {
-    return crow::response(200, "ok");
-  });
+void register_health_route() {
+  auto health_ok = [](const drogon::HttpRequestPtr &,
+                      std::function<void(const drogon::HttpResponsePtr &)> &&callback) {
+    callback(server::make_response(drogon::k200OK, "ok"));
+  };
+  drogon::app().registerHandler("/health", health_ok, {drogon::Get});
+  drogon::app().registerHandler("/health/live", health_ok, {drogon::Get});
+  drogon::app().registerHandler("/health/ready", health_ok, {drogon::Get});
 }
 
-void register_ocr_base64_route(crow::SimpleApp &app,
+void register_ocr_base64_route(server::WorkPool &pool,
                                 const server::InferFunc &infer,
                                 const server::ImageDecoder &decode,
                                 bool layout_available) {
-  CROW_ROUTE(app, "/ocr")
-      .methods(crow::HTTPMethod::Post)(
-          [&infer, &decode, layout_available](const crow::request &req) {
-    bool want_layout = false;
-    if (auto err = server::parse_layout_query(req, layout_available, &want_layout); !err.empty())
-      return crow::response(400, err);
+  drogon::app().registerHandler(
+      "/ocr",
+      [&pool, &infer, &decode, layout_available](
+          const drogon::HttpRequestPtr &req,
+          std::function<void(const drogon::HttpResponsePtr &)> &&callback) {
 
-    auto x = crow::json::load(req.body);
-    if (!x)
-      return crow::response(400, "Invalid JSON");
+        bool want_layout = false;
+        if (auto err = server::parse_layout_query(req, layout_available, &want_layout); !err.empty()) {
+          callback(server::error_response(drogon::k400BadRequest, "INVALID_PARAMETER", err));
+          return;
+        }
 
-    if (!x.has("image") || x["image"].t() != crow::json::type::String
-        || x["image"].s().size() == 0)
-      return crow::response(400, "Empty or missing image field");
+        auto json = req->getJsonObject();
+        if (!json) {
+          callback(server::error_response(drogon::k400BadRequest, "INVALID_JSON", "Invalid JSON"));
+          return;
+        }
+        if (!json->isMember("image") || !(*json)["image"].isString()
+            || (*json)["image"].asString().empty()) {
+          callback(server::error_response(drogon::k400BadRequest, "MISSING_IMAGE", "Empty or missing image field"));
+          return;
+        }
 
-    std::string decoded = turbo_ocr::base64_decode(x["image"].s());
-    if (decoded.empty())
-      return crow::response(400, "Failed to decode base64");
+        auto b64_str = std::make_shared<std::string>((*json)["image"].asString());
 
-    cv::Mat img = decode(
-        reinterpret_cast<const unsigned char *>(decoded.data()),
-        decoded.size());
+        server::submit_work(pool, std::move(callback),
+            [b64_str, &infer, &decode, want_layout](server::DrogonCallback &cb) {
+          server::run_with_error_handling(cb, "/ocr", [&] {
+            std::string decoded_bytes = turbo_ocr::base64_decode(*b64_str);
+            if (decoded_bytes.empty()) {
+              cb(server::error_response(drogon::k400BadRequest, "BASE64_DECODE_FAILED", "Failed to decode base64"));
+              return;
+            }
 
-    if (img.empty())
-      return crow::response(400, "Failed to decode image");
+            cv::Mat img = decode(
+                reinterpret_cast<const unsigned char *>(decoded_bytes.data()),
+                decoded_bytes.size());
+            if (img.empty()) {
+              cb(server::error_response(drogon::k400BadRequest, "IMAGE_DECODE_FAILED", "Failed to decode image"));
+              return;
+            }
 
-    try {
-      auto inf = infer(img, want_layout);
-      auto json_str = turbo_ocr::results_to_json(inf.results, inf.layout);
-      auto resp = crow::response(200, std::move(json_str));
-      resp.set_header("Content-Type", "application/json");
-      return resp;
-    } catch (const turbo_ocr::PoolExhaustedError &) {
-      return crow::response(503, "Service overloaded, try again later");
-    } catch (const std::exception &e) {
-      std::cerr << std::format("[/ocr] Inference error: {}\n", e.what());
-      return crow::response(500, "Inference error");
-    } catch (...) {
-      std::cerr << "[/ocr] Inference error: unknown exception\n";
-      return crow::response(500, "Inference error");
-    }
-  });
+            auto inf = infer(img, want_layout);
+            cb(server::json_response(turbo_ocr::results_to_json(inf.results, inf.layout)));
+          });
+        });
+      },
+      {drogon::Post});
 }
 
-void register_ocr_raw_route(crow::SimpleApp &app,
+void register_ocr_raw_route(server::WorkPool &pool,
                              const server::InferFunc &infer,
                              const server::ImageDecoder &decode,
                              bool layout_available) {
-  CROW_ROUTE(app, "/ocr/raw")
-      .methods(crow::HTTPMethod::Post)(
-          [&infer, &decode, layout_available](const crow::request &req) {
-    if (req.body.empty())
-      return crow::response(400, "Empty body");
+  drogon::app().registerHandler(
+      "/ocr/raw",
+      [&pool, &infer, &decode, layout_available](
+          const drogon::HttpRequestPtr &req,
+          std::function<void(const drogon::HttpResponsePtr &)> &&callback) {
 
-    bool want_layout = false;
-    if (auto err = server::parse_layout_query(req, layout_available, &want_layout); !err.empty())
-      return crow::response(400, err);
+        if (req->body().empty()) {
+          callback(server::error_response(drogon::k400BadRequest, "EMPTY_BODY", "Empty body"));
+          return;
+        }
 
-    cv::Mat img = decode(
-        reinterpret_cast<const unsigned char *>(req.body.data()),
-        req.body.size());
+        bool want_layout = false;
+        if (auto err = server::parse_layout_query(req, layout_available, &want_layout); !err.empty()) {
+          callback(server::error_response(drogon::k400BadRequest, "INVALID_PARAMETER", err));
+          return;
+        }
 
-    if (img.empty())
-      return crow::response(400, "Failed to decode image");
+        server::submit_work(pool, std::move(callback),
+            [req, &infer, &decode, want_layout](server::DrogonCallback &cb) {
+          server::run_with_error_handling(cb, "/ocr/raw", [&] {
+            const auto *data = reinterpret_cast<const unsigned char *>(req->body().data());
+            size_t len = req->body().size();
 
-    try {
-      auto inf = infer(img, want_layout);
-      auto json_str = turbo_ocr::results_to_json(inf.results, inf.layout);
-      auto resp = crow::response(200, std::move(json_str));
-      resp.set_header("Content-Type", "application/json");
-      return resp;
-    } catch (const turbo_ocr::PoolExhaustedError &) {
-      return crow::response(503, "Service overloaded, try again later");
-    } catch (const std::exception &e) {
-      std::cerr << std::format("[/ocr/raw] Inference error: {}\n", e.what());
-      return crow::response(500, "Inference error");
-    } catch (...) {
-      std::cerr << "[/ocr/raw] Inference error: unknown exception\n";
-      return crow::response(500, "Inference error");
-    }
-  });
+            cv::Mat img = decode(data, len);
+            if (img.empty()) {
+              cb(server::error_response(drogon::k400BadRequest, "IMAGE_DECODE_FAILED", "Failed to decode image"));
+              return;
+            }
+
+            auto inf = infer(img, want_layout);
+            cb(server::json_response(turbo_ocr::results_to_json(inf.results, inf.layout)));
+          });
+        });
+      },
+      {drogon::Post});
 }
 
-void register_common_routes(crow::SimpleApp &app,
+void register_common_routes(server::WorkPool &pool,
                              const server::InferFunc &infer,
                              const server::ImageDecoder &decode,
                              bool layout_available) {
-  register_health_route(app);
-  register_ocr_base64_route(app, infer, decode, layout_available);
-  register_ocr_raw_route(app, infer, decode, layout_available);
+  register_health_route();
+  register_ocr_base64_route(pool, infer, decode, layout_available);
+  register_ocr_raw_route(pool, infer, decode, layout_available);
 }
 
 } // namespace turbo_ocr::routes

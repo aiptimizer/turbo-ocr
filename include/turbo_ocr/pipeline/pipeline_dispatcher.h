@@ -41,7 +41,6 @@ public:
             queue_.pop();
           }
           work(*entry);
-          submit_cv_.notify_one();
         }
       });
     }
@@ -50,7 +49,6 @@ public:
   ~PipelineDispatcher() {
     stop_.store(true, std::memory_order_release);
     cv_.notify_all();
-    submit_cv_.notify_all();
     for (auto &w : workers_)
       if (w.joinable()) w.join();
   }
@@ -71,9 +69,9 @@ public:
     {
       std::unique_lock lock(mutex_);
       if (queue_.size() >= max_queue_depth_)
-        submit_cv_.wait(lock, [this] {
-          return stop_.load(std::memory_order_acquire) || queue_.size() < max_queue_depth_;
-        });
+        throw turbo_ocr::PoolExhaustedError(
+            "Server at capacity (GPU queue full). Use persistent connections "
+            "(HTTP keep-alive) instead of opening a new connection per request.");
       queue_.push([task = std::move(task)](GpuPipelineEntry &e) { (*task)(e); });
     }
     cv_.notify_one();
@@ -88,10 +86,9 @@ private:
   std::queue<WorkFn> queue_;
   std::mutex mutex_;
   std::condition_variable cv_;
-  std::condition_variable submit_cv_;
   std::vector<std::thread> workers_;
   std::atomic<bool> stop_{false};
-  size_t max_queue_depth_ = 256;
+  size_t max_queue_depth_ = 4096;
 };
 
 /// Factory: create, init, warmup GPU pipelines and wrap in a dispatcher.

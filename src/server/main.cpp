@@ -6,6 +6,8 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
 
+#include <drogon/HttpAppFramework.h>
+
 #include "turbo_ocr/decode/nvjpeg_decoder.h"
 #include "turbo_ocr/engine/onnx_to_trt.h"
 #include "turbo_ocr/pdf/pdf_extraction_mode.h"
@@ -15,6 +17,7 @@
 #include "turbo_ocr/server/env_utils.h"
 #include "turbo_ocr/server/grpc_service.h"
 #include "turbo_ocr/server/server_types.h"
+#include "turbo_ocr/server/work_pool.h"
 #include "turbo_ocr/routes/common_routes.h"
 #include "turbo_ocr/routes/image_routes.h"
 #include "turbo_ocr/routes/pdf_routes.h"
@@ -147,12 +150,17 @@ int main() {
     };
   };
 
+  // Work pool for offloading blocking inference from Drogon event loop
+  int work_threads = std::max(pool_size * 32, 128);
+  if (const char *env = std::getenv("HTTP_THREADS"))
+    work_threads = std::max(1, std::atoi(env));
+  turbo_ocr::server::WorkPool work_pool(work_threads);
+
   // --- Register all routes ---
-  crow::SimpleApp app;
-  turbo_ocr::routes::register_health_route(app);
-  turbo_ocr::routes::register_ocr_base64_route(app, infer, decode, layout_available);
-  turbo_ocr::routes::register_image_routes(app, *dispatcher, decode, nvjpeg_available, layout_available);
-  turbo_ocr::routes::register_pdf_route(app, *dispatcher, pdf_renderer, default_pdf_mode, layout_available);
+  turbo_ocr::routes::register_health_route();
+  turbo_ocr::routes::register_ocr_base64_route(work_pool, infer, decode, layout_available);
+  turbo_ocr::routes::register_image_routes(work_pool, *dispatcher, decode, nvjpeg_available, layout_available);
+  turbo_ocr::routes::register_pdf_route(work_pool, *dispatcher, pdf_renderer, default_pdf_mode, layout_available);
 
   // gRPC
   int grpc_port = 50051;
@@ -161,16 +169,22 @@ int main() {
   auto grpc_handle = turbo_ocr::server::start_grpc_server(
       *dispatcher, grpc_port, &pdf_renderer, default_pdf_mode, layout_available);
 
-  // HTTP
-  int http_threads = std::max(pool_size * 4, 8);
-  if (const char *env = std::getenv("HTTP_THREADS"))
-    http_threads = std::max(1, std::atoi(env));
-  int port = 8000;
+  // HTTP (Drogon) — behind nginx (port 8000), direct access on 8080
+  int port = 8080;
   if (const char *env = std::getenv("PORT"))
     port = std::max(1, std::atoi(env));
+  int io_threads = std::max(pool_size, 4);
 
-  std::cout << std::format("HTTP server on port {} ({} threads, pool={})\n", port, http_threads, dispatcher->worker_count());
-  app.port(port).timeout(120).concurrency(http_threads).run();
+  std::cout << std::format("HTTP server on port {} ({} IO threads, {} work threads, pool={})\n",
+      port, io_threads, work_threads, dispatcher->worker_count());
+
+  drogon::app()
+      .addListener("0.0.0.0", port)
+      .setThreadNum(io_threads)
+      .setIdleConnectionTimeout(120)
+      .setClientMaxBodySize(100 * 1024 * 1024)  // 100MB for large PDFs
+      .setClientMaxMemoryBodySize(100 * 1024 * 1024)
+      .run();
 
   grpc_handle.server->Shutdown();
   return 0;

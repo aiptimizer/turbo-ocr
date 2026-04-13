@@ -5,6 +5,9 @@
 #include <thread>
 #include <vector>
 
+#include <drogon/HttpAppFramework.h>
+#include <json/json.h>
+
 #include "turbo_ocr/pdf/pdf_extraction_mode.h"
 #include "turbo_ocr/pdf/pdf_text_layer.h"
 #include "turbo_ocr/pipeline/cpu_pipeline_pool.h"
@@ -12,6 +15,7 @@
 #include "turbo_ocr/server/env_utils.h"
 #include "turbo_ocr/server/grpc_service.h"
 #include "turbo_ocr/server/server_types.h"
+#include "turbo_ocr/server/work_pool.h"
 #include "turbo_ocr/routes/common_routes.h"
 #include "turbo_ocr/routes/pdf_routes.h"
 
@@ -50,7 +54,7 @@ int main() {
   // Load layout model into each pipeline if enabled
   if (!layout_disabled && !layout_model.empty()) {
     bool all_ok = true;
-    for (size_t i = 0; i < pool_size; ++i) {
+    for (size_t i = 0; i < static_cast<size_t>(pool_size); ++i) {
       auto handle = pool->acquire();
       if (!handle->load_layout_model(layout_model)) {
         std::cerr << "Layout model not found; layout disabled.\n";
@@ -78,82 +82,82 @@ int main() {
 
   turbo_ocr::server::ImageDecoder decode = turbo_ocr::server::cpu_decode_image;
 
-  crow::SimpleApp app;
+  // Work pool for offloading blocking inference from Drogon event loop
+  int work_threads = std::max(pool_size * 32, 128);
+  turbo_ocr::server::WorkPool work_pool(work_threads);
 
-  turbo_ocr::routes::register_common_routes(app, infer, decode, layout_available);
+  turbo_ocr::routes::register_common_routes(work_pool, infer, decode, layout_available);
 
   // --- /ocr/pixels endpoint (raw BGR pixel data, zero decode overhead) ---
-  CROW_ROUTE(app, "/ocr/pixels")
-      .methods(crow::HTTPMethod::Post)(
-          [&infer](const crow::request &req) {
-            bool want_layout = false;
-            if (auto err = turbo_ocr::server::parse_layout_query(
-                    req, /*layout_available=*/false, &want_layout);
-                !err.empty())
-              return crow::response(400, err);
+  drogon::app().registerHandler(
+      "/ocr/pixels",
+      [&work_pool, &infer](
+          const drogon::HttpRequestPtr &req,
+          std::function<void(const drogon::HttpResponsePtr &)> &&callback) {
+        bool want_layout = false;
+        if (auto err = turbo_ocr::server::parse_layout_query(
+                req, /*layout_available=*/false, &want_layout);
+            !err.empty()) {
+          callback(turbo_ocr::server::error_response(drogon::k400BadRequest, "INVALID_PARAMETER", err));
+          return;
+        }
 
-            auto w_str = req.get_header_value("X-Width");
-            auto h_str = req.get_header_value("X-Height");
-            auto c_str = req.get_header_value("X-Channels");
+        auto w_str = req->getHeader("X-Width");
+        auto h_str = req->getHeader("X-Height");
+        auto c_str = req->getHeader("X-Channels");
 
-            if (w_str.empty() || h_str.empty())
-              return crow::response(400,
-                                    "Missing X-Width or X-Height headers");
+        if (w_str.empty() || h_str.empty()) {
+          callback(turbo_ocr::server::error_response(drogon::k400BadRequest,
+                                    "MISSING_HEADER", "Missing X-Width or X-Height headers"));
+          return;
+        }
 
-            int width, height, channels;
-            try {
-              width = std::stoi(w_str);
-              height = std::stoi(h_str);
-              channels = c_str.empty() ? 3 : std::stoi(c_str);
-            } catch (const std::exception &) {
-              return crow::response(
-                  400,
-                  "Invalid X-Width, X-Height, or X-Channels header value");
-            }
+        int width, height, channels;
+        try {
+          width = std::stoi(w_str);
+          height = std::stoi(h_str);
+          channels = c_str.empty() ? 3 : std::stoi(c_str);
+        } catch (const std::exception &) {
+          callback(turbo_ocr::server::error_response(drogon::k400BadRequest,
+              "INVALID_HEADER", "Invalid X-Width, X-Height, or X-Channels header value"));
+          return;
+        }
 
-            if (width <= 0 || height <= 0 || (channels != 1 && channels != 3))
-              return crow::response(400, "Invalid dimensions or channels");
+        if (width <= 0 || height <= 0 || (channels != 1 && channels != 3)) {
+          callback(turbo_ocr::server::error_response(drogon::k400BadRequest,
+              "INVALID_DIMENSIONS", "Invalid dimensions or channels"));
+          return;
+        }
 
-            constexpr int kMaxPixelDim = 16384;
-            if (width > kMaxPixelDim || height > kMaxPixelDim)
-              return crow::response(
-                  400,
-                  std::format("Dimensions {}x{} exceed maximum of {}x{}",
-                              width, height, kMaxPixelDim, kMaxPixelDim));
+        constexpr int kMaxPixelDim = 16384;
+        if (width > kMaxPixelDim || height > kMaxPixelDim) {
+          callback(turbo_ocr::server::error_response(drogon::k400BadRequest,
+              "DIMENSIONS_TOO_LARGE", std::format("Dimensions {}x{} exceed maximum of {}x{}",
+                          width, height, kMaxPixelDim, kMaxPixelDim)));
+          return;
+        }
 
-            size_t expected =
-                static_cast<size_t>(width) * height * channels;
-            if (req.body.size() != expected)
-              return crow::response(
-                  400,
-                  std::format(
-                      "Body size mismatch: expected {} bytes ({}x{}x{}), got {}",
-                      expected, width, height, channels, req.body.size()));
+        size_t expected = static_cast<size_t>(width) * height * channels;
+        if (req->body().size() != expected) {
+          callback(turbo_ocr::server::error_response(drogon::k400BadRequest,
+              "BODY_SIZE_MISMATCH", std::format("Body size mismatch: expected {} bytes ({}x{}x{}), got {}",
+                          expected, width, height, channels, req->body().size())));
+          return;
+        }
 
+        turbo_ocr::server::submit_work(work_pool, std::move(callback),
+            [req, &infer, width, height, channels, want_layout](turbo_ocr::server::DrogonCallback &cb) {
+          turbo_ocr::server::run_with_error_handling(cb, "/ocr/pixels", [&] {
             cv::Mat img(height, width,
                         channels == 3 ? CV_8UC3 : CV_8UC1,
-                        const_cast<char *>(req.body.data()));
-
-            try {
-              auto inf = infer(img, want_layout);
-              auto json_str =
-                  turbo_ocr::results_to_json(inf.results, inf.layout);
-              auto resp = crow::response(200, std::move(json_str));
-              resp.set_header("Content-Type", "application/json");
-              return resp;
-            } catch (const turbo_ocr::PoolExhaustedError &) {
-              return crow::response(503,
-                                    "Service overloaded, try again later");
-            } catch (const std::exception &e) {
-              std::cerr << std::format("[/ocr/pixels] Inference error: {}\n",
-                                       e.what());
-              return crow::response(500, "Inference error");
-            } catch (...) {
-              std::cerr
-                  << "[/ocr/pixels] Inference error: unknown exception\n";
-              return crow::response(500, "Inference error");
-            }
+                        const_cast<char *>(req->body().data()));
+            auto inf = infer(img, want_layout);
+            cb(turbo_ocr::server::json_response(
+                turbo_ocr::results_to_json(inf.results, inf.layout)));
           });
+        });
+      },
+      {drogon::Post});
 
   // --- /ocr/pdf endpoint (CPU: sequential page OCR) ---
   int pdf_daemons = 4, pdf_workers = 2;
@@ -169,83 +173,95 @@ int main() {
   if (auto *m = std::getenv("ENABLE_PDF_MODE"); m && *m)
     default_pdf_mode = turbo_ocr::pdf::parse_pdf_mode(m);
 
-  turbo_ocr::routes::register_pdf_route(app, infer, pdf_renderer, default_pdf_mode, layout_available);
+  turbo_ocr::routes::register_pdf_route(work_pool, infer, pdf_renderer, default_pdf_mode, layout_available);
 
-  // --- /ocr/batch endpoint (CPU version: simple sequential decode) ---
-  CROW_ROUTE(app, "/ocr/batch")
-      .methods(crow::HTTPMethod::Post)(
-          [&pool, pool_size, &decode](const crow::request &req) {
-            auto x = crow::json::load(req.body);
-            if (!x)
-              return crow::response(400, "Invalid JSON");
+  // --- /ocr/batch endpoint (CPU version) ---
+  drogon::app().registerHandler(
+      "/ocr/batch",
+      [&work_pool, &pool, pool_size, &decode](
+          const drogon::HttpRequestPtr &req,
+          std::function<void(const drogon::HttpResponsePtr &)> &&callback) {
 
-            if (!x.has("images"))
-              return crow::response(400, "Missing images array");
+        auto json = req->getJsonObject();
+        if (!json) {
+          callback(turbo_ocr::server::error_response(drogon::k400BadRequest, "INVALID_JSON", "Invalid JSON"));
+          return;
+        }
+        if (!json->isMember("images") || !(*json)["images"].isArray()) {
+          callback(turbo_ocr::server::error_response(drogon::k400BadRequest, "INVALID_JSON", "Missing images array"));
+          return;
+        }
 
-            auto &images_json = x["images"];
-            size_t n = images_json.size();
-            if (n == 0)
-              return crow::response(400, "Empty images array");
+        auto &images_json = (*json)["images"];
+        size_t n = images_json.size();
+        if (n == 0) {
+          callback(turbo_ocr::server::error_response(drogon::k400BadRequest, "EMPTY_BATCH", "Empty images array"));
+          return;
+        }
 
-            std::vector<cv::Mat> imgs;
-            imgs.reserve(n);
-            for (size_t i = 0; i < n; ++i) {
-              std::string decoded = base64_decode(images_json[i].s());
-              if (decoded.empty())
-                continue;
-              cv::Mat img = decode(
-                  reinterpret_cast<const unsigned char *>(decoded.data()),
-                  decoded.size());
-              if (!img.empty())
-                imgs.push_back(img);
-            }
+        // Pre-decode base64
+        auto raw_bytes = std::make_shared<std::vector<std::string>>(n);
+        for (size_t i = 0; i < n; ++i)
+          (*raw_bytes)[i] = base64_decode(images_json[static_cast<int>(i)].asString());
 
-            if (imgs.empty())
-              return crow::response(400, "No valid images");
+        turbo_ocr::server::submit_work(work_pool, std::move(callback),
+            [raw_bytes, n, &pool, pool_size, &decode](turbo_ocr::server::DrogonCallback &cb) {
+          std::vector<cv::Mat> imgs;
+          imgs.reserve(n);
+          for (size_t i = 0; i < n; ++i) {
+            auto &raw = (*raw_bytes)[i];
+            if (raw.empty()) continue;
+            cv::Mat img = decode(
+                reinterpret_cast<const unsigned char *>(raw.data()),
+                raw.size());
+            if (!img.empty())
+              imgs.push_back(img);
+          }
 
-            std::vector<std::vector<OCRResultItem>> batch_results(imgs.size());
-            std::atomic<size_t> next_idx{0};
+          if (imgs.empty()) {
+            cb(turbo_ocr::server::error_response(drogon::k400BadRequest, "IMAGE_DECODE_FAILED", "No valid images"));
+            return;
+          }
 
-            int num_workers =
-                std::min(static_cast<int>(imgs.size()), pool_size);
-            {
-              std::vector<std::jthread> threads;
-              threads.reserve(num_workers);
-              for (int w = 0; w < num_workers; ++w) {
-                threads.emplace_back([&]() {
-                  try {
-                    auto handle = pool->acquire();
-                    while (true) {
-                      size_t idx = next_idx.fetch_add(1);
-                      if (idx >= imgs.size())
-                        break;
-                      batch_results[idx] = handle->run(imgs[idx]);
-                    }
-                  } catch (const turbo_ocr::PoolExhaustedError &) {
-                    std::cerr << "[Batch] Worker error: pool exhausted\n";
-                  } catch (const std::exception &e) {
-                    std::cerr << std::format("[Batch] Worker error: {}", e.what())
-                              << '\n';
-                  } catch (...) {
-                    std::cerr << "[Batch] Worker error: unknown exception" << '\n';
+          std::vector<std::vector<OCRResultItem>> batch_results(imgs.size());
+          std::atomic<size_t> next_idx{0};
+
+          int num_workers = std::min(static_cast<int>(imgs.size()), pool_size);
+          {
+            std::vector<std::jthread> threads;
+            threads.reserve(num_workers);
+            for (int w = 0; w < num_workers; ++w) {
+              threads.emplace_back([&]() {
+                try {
+                  auto handle = pool->acquire();
+                  while (true) {
+                    size_t idx = next_idx.fetch_add(1);
+                    if (idx >= imgs.size()) break;
+                    batch_results[idx] = handle->run(imgs[idx]);
                   }
-                });
-              }
-            } // jthreads auto-join here
-
-            std::string json_str;
-            json_str.reserve(batch_results.size() * 1024);
-            json_str += "{\"batch_results\":[";
-            for (size_t i = 0; i < batch_results.size(); ++i) {
-              if (i > 0)
-                json_str += ',';
-              json_str += results_to_json(batch_results[i]);
+                } catch (const turbo_ocr::PoolExhaustedError &) {
+                  std::cerr << "[Batch] Worker error: pool exhausted\n";
+                } catch (const std::exception &e) {
+                  std::cerr << std::format("[Batch] Worker error: {}", e.what()) << '\n';
+                } catch (...) {
+                  std::cerr << "[Batch] Worker error: unknown exception" << '\n';
+                }
+              });
             }
-            json_str += "]}";
-            auto resp = crow::response(200, std::move(json_str));
-            resp.set_header("Content-Type", "application/json");
-            return resp;
-          });
+          } // jthreads auto-join here
+
+          std::string json_str;
+          json_str.reserve(batch_results.size() * 1024);
+          json_str += "{\"batch_results\":[";
+          for (size_t i = 0; i < batch_results.size(); ++i) {
+            if (i > 0) json_str += ',';
+            json_str += results_to_json(batch_results[i]);
+          }
+          json_str += "]}";
+          cb(turbo_ocr::server::json_response(std::move(json_str)));
+        });
+      },
+      {drogon::Post});
 
   // gRPC server
   int grpc_port = 50051;
@@ -254,15 +270,22 @@ int main() {
   auto grpc_handle = turbo_ocr::server::start_grpc_server(
       infer, grpc_port, &pdf_renderer, default_pdf_mode, layout_available);
 
-  // HTTP server
-  int port = 8000;
+  // HTTP server (Drogon)
+  int port = 8080;
   if (const char *env = std::getenv("PORT"))
     port = std::max(1, std::atoi(env));
 
   std::cout << std::format("Starting CPU-Only OCR Server on port {} (gRPC on {})\n", port, grpc_port)
             << "  Endpoints: /health, /ocr, /ocr/raw, /ocr/pixels, /ocr/batch, /ocr/pdf\n"
             << "  gRPC: OCRService.Recognize, RecognizeBatch, RecognizePDF, Health\n";
-  app.port(port).multithreaded().run();
+
+  drogon::app()
+      .addListener("0.0.0.0", port)
+      .setThreadNum(4)
+      .setIdleConnectionTimeout(120)
+      .setClientMaxBodySize(100 * 1024 * 1024)
+      .setClientMaxMemoryBodySize(100 * 1024 * 1024)
+      .run();
 
   grpc_handle.server->Shutdown();
   return 0;

@@ -23,6 +23,7 @@ class CudaError : public OcrError {
 class PoolExhaustedError : public OcrError {
 public:
   PoolExhaustedError() : OcrError("Pipeline pool exhausted (timeout)") {}
+  explicit PoolExhaustedError(const std::string &msg) : OcrError(msg) {}
 };
 
 class ImageDecodeError : public OcrError {

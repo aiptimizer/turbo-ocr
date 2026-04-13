@@ -25,15 +25,33 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     make \
     pkg-config \
     libopencv-dev \
-    libboost-all-dev \
-    libasio-dev \
+    nginx \
+    gosu \
     libgrpc++-dev \
+    libc-ares-dev \
     libprotobuf-dev \
     protobuf-compiler \
     protobuf-compiler-grpc \
+    libjsoncpp-dev \
+    uuid-dev \
+    zlib1g-dev \
+    libssl-dev \
+    git \
     wget \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Drogon HTTP framework (async, epoll-based — replaces Crow)
+RUN cd /tmp && \
+    git clone --depth 1 --branch v1.9.12 https://github.com/drogonframework/drogon.git && \
+    cd drogon && \
+    git submodule update --init && \
+    mkdir build && cd build && \
+    cmake .. -DBUILD_EXAMPLES=OFF -DBUILD_CTL=OFF -DBUILD_ORM=OFF \
+             -DBUILD_POSTGRESQL=OFF -DBUILD_MYSQL=OFF -DBUILD_SQLITE=OFF \
+             -DBUILD_REDIS=OFF -DBUILD_TESTING=OFF && \
+    make -j$(nproc) && make install && \
+    rm -rf /tmp/drogon
 
 # Install ONNX Runtime C++ SDK
 ARG ORT_VERSION=1.22.0
@@ -58,9 +76,13 @@ RUN mkdir -p build_cpu && cd build_cpu && \
     cmake .. -DUSE_CPU_ONLY=ON && \
     make -j$(nproc)
 
-# HTTP + gRPC server ports
-EXPOSE 8000
-EXPOSE 50051
+# Non-root user for the OCR process (nginx runs as root, app drops to ocr via gosu)
+RUN useradd -m -s /bin/bash ocr && chown -R ocr:ocr /app
 
-# Default: CPU HTTP server
+COPY scripts/entrypoint.sh /app/scripts/
+RUN chmod +x /app/scripts/entrypoint.sh
+
+EXPOSE 8000 50051
+
+ENTRYPOINT ["/app/scripts/entrypoint.sh"]
 CMD ["./build_cpu/paddle_cpu_server"]

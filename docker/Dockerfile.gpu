@@ -15,13 +15,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     pkg-config \
     libopencv-dev \
-    libasio-dev \
+    nginx \
+    gosu \
     libgrpc++-dev \
     libprotobuf-dev \
     protobuf-compiler-grpc \
+    libjsoncpp-dev \
+    uuid-dev \
+    zlib1g-dev \
+    libssl-dev \
+    libc-ares-dev \
+    git \
     wget \
     curl \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Drogon HTTP framework (async, epoll-based — replaces Crow)
+RUN cd /tmp && \
+    git clone --depth 1 --branch v1.9.12 https://github.com/drogonframework/drogon.git && \
+    cd drogon && \
+    git submodule update --init && \
+    mkdir build && cd build && \
+    cmake .. -DBUILD_EXAMPLES=OFF -DBUILD_CTL=OFF -DBUILD_ORM=OFF \
+             -DBUILD_POSTGRESQL=OFF -DBUILD_MYSQL=OFF -DBUILD_SQLITE=OFF \
+             -DBUILD_REDIS=OFF -DBUILD_TESTING=OFF && \
+    make -j$(nproc) && make install && \
+    rm -rf /tmp/drogon
 
 # Upgrade cmake (base image has 3.24, need 3.17+ for CUDA C++20)
 ARG CMAKE_VERSION=3.31.6
@@ -64,12 +83,11 @@ RUN mkdir -p build && cd build && \
 
 EXPOSE 8000 50051
 
-# Run as non-root user
+# Non-root user for the OCR process (nginx runs as root, app drops to ocr via gosu)
 RUN useradd -m -s /bin/bash ocr && chown -R ocr:ocr /app
 RUN mkdir -p /home/ocr/.cache/turbo-ocr && chown -R ocr:ocr /home/ocr/.cache
-USER ocr
 
-# Entrypoint builds TRT engines on first run (needs GPU)
-COPY --chown=ocr:ocr scripts/entrypoint.sh /app/scripts/
+COPY scripts/entrypoint.sh /app/scripts/
+RUN chmod +x /app/scripts/entrypoint.sh
 ENTRYPOINT ["/app/scripts/entrypoint.sh"]
 CMD ["./build/paddle_highspeed_cpp"]

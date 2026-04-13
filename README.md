@@ -106,6 +106,7 @@ HTTP on port 8000, gRPC on port 50051 — single binary, shared GPU pipeline poo
 | `/ocr/batch` | `{"images": ["<b64>", ...]}` | Multiple images in one request |
 | `/ocr/pixels` | Raw BGR bytes + `X-Width`/`X-Height` headers | Zero-decode path |
 | `/ocr/pdf` | Raw bytes, `{"pdf": "<b64>"}`, or `multipart/form-data` | All pages OCR'd in parallel |
+| `/metrics` | — | Prometheus metrics (text exposition format) |
 | gRPC | Raw bytes (protobuf) | Port 50051 — see `proto/ocr.proto` |
 
 ### Query Parameters
@@ -181,7 +182,19 @@ Coordinate conversion: `x_pdf = x_px * 72 / dpi`.
 | `auto` | Per-page: text layer if available, else OCR | Fastest for mixed PDFs |
 | `auto_verified` | Full pipeline + replace with native text where sanity check passes | Slightly slower than OCR |
 
-> **Security note:** `geometric`, `auto`, and `auto_verified` trust the PDF text layer. A PDF can lie via invisible text or ToUnicode remapping. Use `mode=ocr` for untrusted documents.
+> [!CAUTION]
+> **PDF text-layer trust model.** Modes other than `ocr` read the PDF's native text layer, which the PDF author controls. A malicious PDF can embed invisible text, remap glyphs via ToUnicode, or inject arbitrary strings that differ from what's visually rendered.
+>
+> **When to use each mode:**
+> | Scenario | Recommended mode | Why |
+> |----------|-----------------|-----|
+> | Untrusted uploads (user-submitted PDFs) | `ocr` | Only trusts pixel data — immune to text-layer manipulation |
+> | Internal/trusted documents | `auto` or `geometric` | Safe when you control the PDF source; much faster |
+> | High-accuracy with verification | `auto_verified` | OCR runs first, then results are cross-checked against the text layer. Accepts native text only if it passes heuristic validation (character count, non-printable ratio < 10%, replacement char ratio < 5%, no rotation) |
+>
+> **Default:** `mode=ocr` (safest). Override per-request via `?mode=` query parameter or globally via `ENABLE_PDF_MODE` env var.
+>
+> **Deployment recommendation:** If your service accepts PDFs from untrusted sources, do **not** set `ENABLE_PDF_MODE` to `geometric` or `auto` globally. Keep the default `ocr` and only use text-layer modes for trusted internal workflows.
 
 ### Layout Detection
 
@@ -273,6 +286,56 @@ docker run --gpus all -p 8000:8000 \
   -e PIPELINE_POOL_SIZE=3 \
   turbo-ocr
 ```
+
+Add `MAX_PDF_PAGES` (default `2000`) to limit the number of pages processed per PDF request. `LOG_LEVEL` (`debug`/`info`/`warn`/`error`) and `LOG_FORMAT` (`json`/`text`) control structured logging output.
+
+---
+
+## Monitoring
+
+### Prometheus Metrics
+
+Scrape `GET /metrics` for Prometheus-compatible metrics:
+
+```
+turbo_ocr_requests_total{route="/ocr/raw",status="2xx"} 1042
+turbo_ocr_request_duration_seconds_bucket{route="/ocr/raw",le="0.025"} 980
+turbo_ocr_request_duration_seconds_sum{route="/ocr/raw"} 12.345
+turbo_ocr_request_duration_seconds_count{route="/ocr/raw"} 1042
+turbo_ocr_gpu_vram_used_bytes 9052815360
+turbo_ocr_gpu_vram_total_bytes 33661911040
+turbo_ocr_pipeline_pool_size 5
+turbo_ocr_pool_exhaustions_total 0
+turbo_ocr_request_bytes_total 49493243
+```
+
+### Response Headers
+
+Every response includes:
+
+| Header | Description |
+|--------|-------------|
+| `X-Request-Id` | UUID v7 (or propagated from client `X-Request-Id` header) |
+| `X-Inference-Time-Ms` | End-to-end processing time in milliseconds |
+| `Retry-After` | Seconds to wait (only on 503 responses) |
+
+### Health Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /health` | Basic liveness check |
+| `GET /health/live` | Kubernetes liveness probe |
+| `GET /health/ready` | Readiness probe &mdash; verifies GPU pipeline is responsive |
+
+### Structured Errors
+
+All error responses return JSON with `Content-Type: application/json`:
+
+```json
+{"error": {"code": "EMPTY_BODY", "message": "Empty body"}}
+```
+
+Error codes: `EMPTY_BODY`, `INVALID_JSON`, `MISSING_IMAGE`, `BASE64_DECODE_FAILED`, `IMAGE_DECODE_FAILED`, `INVALID_PARAMETER`, `INVALID_DPI`, `INVALID_DIMENSIONS`, `DIMENSIONS_TOO_LARGE`, `BODY_SIZE_MISMATCH`, `MISSING_HEADER`, `INVALID_HEADER`, `EMPTY_BATCH`, `MISSING_FILE`, `MISSING_PDF`, `INVALID_MULTIPART`, `PDF_RENDER_FAILED`, `PDF_TOO_LARGE`, `EMPTY_PDF`, `SERVER_BUSY`, `INFERENCE_ERROR`.
 
 ---
 

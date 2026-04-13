@@ -5,14 +5,28 @@
 
 namespace turbo_ocr::routes {
 
-void register_health_route() {
+void register_health_route(std::function<bool()> readiness_check) {
   auto health_ok = [](const drogon::HttpRequestPtr &,
                       std::function<void(const drogon::HttpResponsePtr &)> &&callback) {
     callback(server::make_response(drogon::k200OK, "ok"));
   };
   drogon::app().registerHandler("/health", health_ok, {drogon::Get});
   drogon::app().registerHandler("/health/live", health_ok, {drogon::Get});
-  drogon::app().registerHandler("/health/ready", health_ok, {drogon::Get});
+
+  // /health/ready — verifies the pipeline is actually responsive
+  auto ready_check = std::make_shared<std::function<bool()>>(std::move(readiness_check));
+  drogon::app().registerHandler(
+      "/health/ready",
+      [ready_check](const drogon::HttpRequestPtr &,
+                    std::function<void(const drogon::HttpResponsePtr &)> &&callback) {
+        if (*ready_check && !(*ready_check)()) {
+          callback(server::error_response(drogon::k503ServiceUnavailable,
+              "NOT_READY", "Pipeline not ready"));
+          return;
+        }
+        callback(server::make_response(drogon::k200OK, "ok"));
+      },
+      {drogon::Get});
 }
 
 void register_ocr_base64_route(server::WorkPool &pool,

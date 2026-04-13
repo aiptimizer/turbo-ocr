@@ -1,3 +1,4 @@
+#include <csignal>
 #include <cstdlib>
 #include <format>
 #include <string>
@@ -17,6 +18,7 @@
 #include "turbo_ocr/render/pdf_renderer.h"
 #include "turbo_ocr/server/env_utils.h"
 #include "turbo_ocr/server/grpc_service.h"
+#include "turbo_ocr/server/metrics.h"
 #include "turbo_ocr/server/server_types.h"
 #include "turbo_ocr/server/work_pool.h"
 #include "turbo_ocr/routes/common_routes.h"
@@ -27,6 +29,15 @@ using turbo_ocr::decode::FastPngDecoder;
 using turbo_ocr::decode::NvJpegDecoder;
 using turbo_ocr::render::PdfRenderer;
 using turbo_ocr::server::env_or;
+
+namespace {
+std::atomic<bool> g_shutdown_requested{false};
+
+void shutdown_handler(int) {
+  if (g_shutdown_requested.exchange(true)) return;
+  drogon::app().quit();
+}
+} // namespace
 
 int main() {
   auto rec_dict = env_or("REC_DICT", "models/keys.txt");
@@ -152,7 +163,18 @@ int main() {
   turbo_ocr::server::WorkPool work_pool(work_threads);
 
   // --- Register all routes ---
-  turbo_ocr::routes::register_health_route();
+  turbo_ocr::server::Metrics::instance().set_pool_size(pool_size);
+  turbo_ocr::server::register_observability_middleware();
+  turbo_ocr::server::register_metrics_route();
+  turbo_ocr::routes::register_health_route([&dispatcher]() -> bool {
+    // Verify GPU is responsive by submitting a no-op to the dispatcher.
+    try {
+      dispatcher->submit([](auto &) {}).get();
+      return true;
+    } catch (...) {
+      return false;
+    }
+  });
   turbo_ocr::routes::register_ocr_base64_route(work_pool, infer, decode, layout_available);
   turbo_ocr::routes::register_image_routes(work_pool, *dispatcher, decode, nvjpeg_available, layout_available);
   turbo_ocr::routes::register_pdf_route(work_pool, *dispatcher, pdf_renderer, default_pdf_mode, layout_available);
@@ -173,6 +195,10 @@ int main() {
   TOCR_LOG_INFO("HTTP server starting", "port", port, "io_threads", io_threads,
            "work_threads", work_threads, "pool_size", dispatcher->worker_count());
 
+  // Graceful shutdown on SIGTERM (Docker stop) and SIGINT (Ctrl-C)
+  std::signal(SIGTERM, shutdown_handler);
+  std::signal(SIGINT,  shutdown_handler);
+
   drogon::app()
       .addListener("0.0.0.0", port)
       .setThreadNum(io_threads)
@@ -181,6 +207,8 @@ int main() {
       .setClientMaxMemoryBodySize(100 * 1024 * 1024)
       .run();
 
+  TOCR_LOG_INFO("HTTP server stopped, shutting down gRPC");
   grpc_handle.server->Shutdown();
+  TOCR_LOG_INFO("Shutdown complete");
   return 0;
 }

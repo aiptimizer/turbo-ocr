@@ -1,4 +1,5 @@
 #include <atomic>
+#include <csignal>
 #include <cstdlib>
 #include <format>
 #include <string>
@@ -16,6 +17,7 @@
 #include "turbo_ocr/render/pdf_renderer.h"
 #include "turbo_ocr/server/env_utils.h"
 #include "turbo_ocr/server/grpc_service.h"
+#include "turbo_ocr/server/metrics.h"
 #include "turbo_ocr/server/server_types.h"
 #include "turbo_ocr/server/work_pool.h"
 #include "turbo_ocr/routes/common_routes.h"
@@ -26,6 +28,15 @@ using turbo_ocr::OCRResultItem;
 using turbo_ocr::base64_decode;
 using turbo_ocr::results_to_json;
 using turbo_ocr::server::env_or;
+
+namespace {
+std::atomic<bool> g_shutdown_requested{false};
+
+void shutdown_handler(int) {
+  if (g_shutdown_requested.exchange(true)) return;
+  drogon::app().quit();
+}
+} // namespace
 
 int main() {
   TOCR_LOG_INFO("PaddleOCR CPU-Only Mode (ONNX Runtime)");
@@ -87,17 +98,20 @@ int main() {
   int work_threads = std::max(pool_size * 32, 128);
   turbo_ocr::server::WorkPool work_pool(work_threads);
 
+  turbo_ocr::server::Metrics::instance().set_pool_size(pool_size);
+  turbo_ocr::server::register_observability_middleware();
+  turbo_ocr::server::register_metrics_route();
   turbo_ocr::routes::register_common_routes(work_pool, infer, decode, layout_available);
 
   // --- /ocr/pixels endpoint (raw BGR pixel data, zero decode overhead) ---
   drogon::app().registerHandler(
       "/ocr/pixels",
-      [&work_pool, &infer](
+      [&work_pool, &infer, layout_available](
           const drogon::HttpRequestPtr &req,
           std::function<void(const drogon::HttpResponsePtr &)> &&callback) {
         bool want_layout = false;
         if (auto err = turbo_ocr::server::parse_layout_query(
-                req, /*layout_available=*/false, &want_layout);
+                req, layout_available, &want_layout);
             !err.empty()) {
           callback(turbo_ocr::server::error_response(drogon::k400BadRequest, "INVALID_PARAMETER", err));
           return;
@@ -179,9 +193,15 @@ int main() {
   // --- /ocr/batch endpoint (CPU version) ---
   drogon::app().registerHandler(
       "/ocr/batch",
-      [&work_pool, &pool, pool_size, &decode](
+      [&work_pool, &pool, pool_size, &decode, layout_available](
           const drogon::HttpRequestPtr &req,
           std::function<void(const drogon::HttpResponsePtr &)> &&callback) {
+
+        bool want_layout = false;
+        if (auto err = turbo_ocr::server::parse_layout_query(req, layout_available, &want_layout); !err.empty()) {
+          callback(turbo_ocr::server::error_response(drogon::k400BadRequest, "INVALID_PARAMETER", err));
+          return;
+        }
 
         auto json = req->getJsonObject();
         if (!json) {
@@ -206,7 +226,7 @@ int main() {
           (*raw_bytes)[i] = base64_decode(images_json[static_cast<int>(i)].asString());
 
         turbo_ocr::server::submit_work(work_pool, std::move(callback),
-            [raw_bytes, n, &pool, pool_size, &decode](turbo_ocr::server::DrogonCallback &cb) {
+            [raw_bytes, n, &pool, pool_size, &decode, want_layout](turbo_ocr::server::DrogonCallback &cb) {
           std::vector<cv::Mat> imgs;
           imgs.reserve(n);
           for (size_t i = 0; i < n; ++i) {
@@ -224,7 +244,11 @@ int main() {
             return;
           }
 
-          std::vector<std::vector<OCRResultItem>> batch_results(imgs.size());
+          struct BatchItem {
+            std::vector<OCRResultItem> results;
+            std::vector<turbo_ocr::layout::LayoutBox> layout;
+          };
+          std::vector<BatchItem> batch_items(imgs.size());
           std::atomic<size_t> next_idx{0};
 
           int num_workers = std::min(static_cast<int>(imgs.size()), pool_size);
@@ -238,7 +262,9 @@ int main() {
                   while (true) {
                     size_t idx = next_idx.fetch_add(1);
                     if (idx >= imgs.size()) break;
-                    batch_results[idx] = handle->run(imgs[idx]);
+                    auto out = handle->run_with_layout(imgs[idx], want_layout);
+                    batch_items[idx].results = std::move(out.results);
+                    batch_items[idx].layout = std::move(out.layout);
                   }
                 } catch (const turbo_ocr::PoolExhaustedError &) {
                   TOCR_LOG_ERROR("Batch worker error: pool exhausted", "route", "/ocr/batch");
@@ -252,11 +278,11 @@ int main() {
           } // jthreads auto-join here
 
           std::string json_str;
-          json_str.reserve(batch_results.size() * 1024);
+          json_str.reserve(batch_items.size() * 1024);
           json_str += "{\"batch_results\":[";
-          for (size_t i = 0; i < batch_results.size(); ++i) {
+          for (size_t i = 0; i < batch_items.size(); ++i) {
             if (i > 0) json_str += ',';
-            json_str += results_to_json(batch_results[i]);
+            json_str += results_to_json(batch_items[i].results, batch_items[i].layout);
           }
           json_str += "]}";
           cb(turbo_ocr::server::json_response(std::move(json_str)));
@@ -278,6 +304,10 @@ int main() {
 
   TOCR_LOG_INFO("Starting CPU-Only OCR Server", "port", port, "grpc_port", grpc_port);
 
+  // Graceful shutdown on SIGTERM (Docker stop) and SIGINT (Ctrl-C)
+  std::signal(SIGTERM, shutdown_handler);
+  std::signal(SIGINT,  shutdown_handler);
+
   drogon::app()
       .addListener("0.0.0.0", port)
       .setThreadNum(4)
@@ -286,6 +316,8 @@ int main() {
       .setClientMaxMemoryBodySize(100 * 1024 * 1024)
       .run();
 
+  TOCR_LOG_INFO("HTTP server stopped, shutting down gRPC");
   grpc_handle.server->Shutdown();
+  TOCR_LOG_INFO("Shutdown complete");
   return 0;
 }

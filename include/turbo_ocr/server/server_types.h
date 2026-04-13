@@ -24,6 +24,7 @@
 #include "turbo_ocr/common/types.h"
 #include "turbo_ocr/decode/fast_png_decoder.h"
 #include "turbo_ocr/layout/layout_types.h"
+#include "turbo_ocr/server/metrics.h"
 
 namespace turbo_ocr::server {
 
@@ -141,35 +142,77 @@ void run_with_error_handling(DrogonCallback &cb, const char *route, F &&fn) {
 
 namespace turbo_ocr::server {
 
-// ── Work submission with observability ──────────────────────────────────
+// ── Work submission ─────────────────────────────────────────────────────
 
-/// Submit blocking work to a WorkPool with automatic:
-///   - X-Request-Id header (UUID v7)
-///   - X-Inference-Time-Ms header
-///   - Retry-After header on 503
-///   - Safe callback lifetime (shared_ptr)
+/// Submit blocking work to a WorkPool safely.
+/// Callback is wrapped in shared_ptr so it survives if submit() throws.
+/// Observability headers (X-Request-Id, X-Inference-Time-Ms, Retry-After)
+/// are injected by the middleware registered in register_observability_middleware().
 template <typename F>
 void submit_work(WorkPool &pool, DrogonCallback &&callback, F &&work) {
-  auto req_id = generate_uuid_v7();
-  auto t0 = std::chrono::steady_clock::now();
-
-  // Wrap the original callback to inject headers on every response.
-  auto cb = std::make_shared<DrogonCallback>(
-      [orig = std::move(callback), req_id, t0](const drogon::HttpResponsePtr &resp) {
-        resp->addHeader("X-Request-Id", req_id);
-        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - t0).count();
-        resp->addHeader("X-Inference-Time-Ms", std::to_string(ms));
-        if (resp->statusCode() == drogon::k503ServiceUnavailable)
-          resp->addHeader("Retry-After", "1");
-        orig(resp);
-      });
-
+  auto cb = std::make_shared<DrogonCallback>(std::move(callback));
   try {
     pool.submit([cb, w = std::forward<F>(work)]() mutable { w(*cb); });
   } catch (const turbo_ocr::PoolExhaustedError &e) {
+    Metrics::instance().record_pool_exhaustion();
     (*cb)(error_response(drogon::k503ServiceUnavailable, "SERVER_BUSY", e.what()));
   }
+}
+
+/// Register Drogon middleware for observability headers and metrics.
+/// Call once before drogon::app().run().
+///
+/// Pre-handling:  generates X-Request-Id (or propagates from client),
+///                records request start time in request attributes.
+/// Post-handling: injects X-Request-Id, X-Inference-Time-Ms, Retry-After
+///                headers; records metrics.
+inline void register_observability_middleware() {
+  // Pre-request: assign request ID + start time
+  drogon::app().registerPreHandlingAdvice(
+      [](const drogon::HttpRequestPtr &req) {
+        auto id = req->getHeader("X-Request-Id");
+        if (id.empty()) id = generate_uuid_v7();
+        req->addHeader("X-Request-Id", id);  // store for post-handler
+        // Store start time as attribute (nanoseconds since epoch)
+        auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+        req->addHeader("X-Start-Ns", std::to_string(now));
+      });
+
+  // Post-request: inject response headers + record metrics
+  drogon::app().registerPostHandlingAdvice(
+      [](const drogon::HttpRequestPtr &req,
+         const drogon::HttpResponsePtr &resp) {
+        // X-Request-Id
+        auto req_id = req->getHeader("X-Request-Id");
+        if (!req_id.empty())
+          resp->addHeader("X-Request-Id", req_id);
+
+        // X-Inference-Time-Ms
+        auto start_ns_str = req->getHeader("X-Start-Ns");
+        double duration_s = 0.0;
+        if (!start_ns_str.empty()) {
+          try {
+            auto start_ns = std::stoll(start_ns_str);
+            auto now_ns = std::chrono::steady_clock::now().time_since_epoch().count();
+            auto ms = (now_ns - start_ns) / 1'000'000;
+            resp->addHeader("X-Inference-Time-Ms", std::to_string(ms));
+            duration_s = static_cast<double>(now_ns - start_ns) / 1e9;
+          } catch (...) {}
+        }
+
+        // Retry-After on 503
+        if (resp->statusCode() == drogon::k503ServiceUnavailable)
+          resp->addHeader("Retry-After", "1");
+
+        // Metrics
+        auto path = req->path();
+        if (path != "/metrics") {
+          auto route = Metrics::route_from_path(path);
+          int status = static_cast<int>(resp->statusCode());
+          Metrics::instance().record_request(route, status, duration_s);
+          Metrics::instance().record_request_size(req->body().size());
+        }
+      });
 }
 
 // ── Utilities ───────────────────────────────────────────────────────────

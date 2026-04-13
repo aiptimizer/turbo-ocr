@@ -13,8 +13,8 @@ Turbo OCR — Fast GPU OCR server. C++ / CUDA / TensorRT. 270 img/s on FUNSD.
 
 <p align="center">
   <img src="https://img.shields.io/badge/throughput-270_img%2Fs-blue?style=flat-square&logo=speedtest&logoColor=white" alt="270 img/s">
-  <a href="https://github.com/aiptimizer/turbo-ocr/releases/latest"><img src="https://img.shields.io/github/v/release/aiptimizer/turbo-ocr?style=flat-square&logo=github&logoColor=white" alt="Release"></a>
-  <a href="https://ghcr.io/aiptimizer/turbo-ocr"><img src="https://img.shields.io/badge/docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker"></a>
+  <a href="https://github.com/aiptimizer/TurboOCR/releases/latest"><img src="https://img.shields.io/github/v/release/aiptimizer/TurboOCR?style=flat-square&logo=github&logoColor=white" alt="Release"></a>
+  <a href="https://ghcr.io/aiptimizer/turboocr"><img src="https://img.shields.io/badge/docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker"></a>
   <img src="https://img.shields.io/badge/C%2B%2B20-00599C?style=flat-square&logo=cplusplus&logoColor=white" alt="C++20">
   <img src="https://img.shields.io/badge/CUDA-76B900?style=flat-square&logo=nvidia&logoColor=white" alt="CUDA">
   <img src="https://img.shields.io/badge/TensorRT-10.16-76B900?style=flat-square&logo=nvidia&logoColor=white" alt="TensorRT 10.16">
@@ -71,7 +71,7 @@ Turbo-OCR vs PaddleOCR · EasyOCR · VLMs — FUNSD (50 pages, RTX 5090)
 ```bash
 docker run --gpus all -p 8000:8000 -p 50051:50051 \
   -v trt-cache:/home/ocr/.cache/turbo-ocr \
-  ghcr.io/aiptimizer/turbo-ocr:v1.3.0
+  ghcr.io/aiptimizer/turboocr:v2.0.0
 ```
 
 First startup builds TensorRT engines from ONNX (~90s). The volume caches them for instant restarts. nginx (port 8000) reverse-proxies to Drogon (port 8080) for connection buffering — both start automatically.
@@ -290,7 +290,7 @@ Layout detection is **enabled by default**. The model is loaded at startup but o
 docker run --gpus all -p 8000:8000 \
   -v trt-cache:/home/ocr/.cache/turbo-ocr \
   -e PIPELINE_POOL_SIZE=3 \
-  turbo-ocr
+  turboocr
 ```
 
 Add `MAX_PDF_PAGES` (default `2000`) to limit the number of pages processed per PDF request. `LOG_LEVEL` (`debug`/`info`/`warn`/`error`) and `LOG_FORMAT` (`json`/`text`) control structured logging output.
@@ -361,13 +361,13 @@ Wuffs, Clipper, PDFium vendored in `third_party/`.
 
 ```bash
 # Docker (recommended)
-docker build -f docker/Dockerfile.gpu -t turbo-ocr .
+docker build -f docker/Dockerfile.gpu -t turboocr .
 docker run --gpus all -p 8000:8000 -p 50051:50051 \
-  -v trt-cache:/home/ocr/.cache/turbo-ocr turbo-ocr
+  -v trt-cache:/home/ocr/.cache/turbo-ocr turboocr
 
 # CPU only (Docker) — ~2-3 img/s, mainly for testing
-docker build -f docker/Dockerfile.cpu -t turbo-ocr-cpu .
-docker run -p 8000:8000 turbo-ocr-cpu
+docker build -f docker/Dockerfile.cpu -t turboocr-cpu .
+docker run -p 8000:8000 turboocr-cpu
 
 # Native build
 cmake -B build -DTENSORRT_DIR=/usr/local/tensorrt && cmake --build build -j$(nproc)

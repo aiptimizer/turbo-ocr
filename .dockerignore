@@ -24,4 +24,7 @@ models/PP-OCRv5_server_det_infer/
 LICENSE
 README.md
 .clang-format
-tests/
+tests/benchmark/
+tests/integration/
+tests/regression/
+tests/fixtures/

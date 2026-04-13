@@ -12,11 +12,15 @@ Turbo OCR — Fast GPU OCR server. C++ / CUDA / TensorRT. 270 img/s on FUNSD.
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/throughput-270_img%2Fs-blue?logo=speedtest&logoColor=white" alt="270 img/s">
-  <img src="https://img.shields.io/badge/GPU-NVIDIA_Turing+-76B900?logo=nvidia&logoColor=white" alt="NVIDIA Turing+">
-  <img src="https://img.shields.io/badge/TensorRT-10.16-76B900?logo=nvidia&logoColor=white" alt="TensorRT 10.16">
-  <a href="https://github.com/PaddlePaddle/PaddleOCR"><img src="https://img.shields.io/badge/PP--OCRv5-PaddleOCR-0053D6?logo=paddlepaddle&logoColor=white" alt="PaddleOCR"></a>
-  <img src="https://img.shields.io/badge/license-MIT-blue?logo=opensourceinitiative&logoColor=white" alt="MIT License">
+  <img src="https://img.shields.io/badge/throughput-270_img%2Fs-blue?style=flat-square&logo=speedtest&logoColor=white" alt="270 img/s">
+  <a href="https://github.com/aiptimizer/turbo-ocr/releases/latest"><img src="https://img.shields.io/github/v/release/aiptimizer/turbo-ocr?style=flat-square&logo=github&logoColor=white" alt="Release"></a>
+  <a href="https://ghcr.io/aiptimizer/turbo-ocr"><img src="https://img.shields.io/badge/docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker"></a>
+  <img src="https://img.shields.io/badge/C%2B%2B20-00599C?style=flat-square&logo=cplusplus&logoColor=white" alt="C++20">
+  <img src="https://img.shields.io/badge/CUDA-76B900?style=flat-square&logo=nvidia&logoColor=white" alt="CUDA">
+  <img src="https://img.shields.io/badge/TensorRT-10.16-76B900?style=flat-square&logo=nvidia&logoColor=white" alt="TensorRT 10.16">
+  <img src="https://img.shields.io/badge/gRPC-4285F4?style=flat-square&logo=google&logoColor=white" alt="gRPC">
+  <a href="https://github.com/PaddlePaddle/PaddleOCR"><img src="https://img.shields.io/badge/PP--OCRv5-PaddleOCR-0053D6?style=flat-square&logo=paddlepaddle&logoColor=white" alt="PaddleOCR"></a>
+  <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square&logo=opensourceinitiative&logoColor=white" alt="MIT License">
 </p>
 
 <p align="center">

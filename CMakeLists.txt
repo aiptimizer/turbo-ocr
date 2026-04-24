@@ -76,9 +76,11 @@ add_executable(turbo_ocr_tests
     tests/cpp/test_encoding.cpp
     tests/cpp/test_serialization.cpp
     tests/cpp/test_language_paths.cpp
+    tests/cpp/test_pdf_renderer_liveness.cpp
     tests/cpp/test_ctc_decode.cpp
     tests/cpp/test_perspective.cpp
     tests/cpp/test_det_postprocess.cpp
+    src/render/pdf_renderer.cpp
     third_party/catch2/catch_amalgamated.cpp
 )
 target_link_libraries(turbo_ocr_tests PRIVATE turbo_ocr_common)

@@ -64,12 +64,11 @@ Turbo-OCR vs PaddleOCR · EasyOCR · VLMs — FUNSD (50 pages, RTX 5090)
 - 🌐 **HTTP + gRPC** from a single binary, sharing the same GPU pipeline pool
 - 🐳 **One-line Docker deploy** &mdash; `docker run` with auto TRT engine build on first start
 - 📊 **Prometheus metrics** &mdash; request counters, latency histograms, VRAM usage on `/metrics`
+- 🌐 Configurable languages (Latine e.g., English, French, German, Spanish, Portuguese; Chinese, Greek, Russian, Arabic, Korean, Thai)
 
 *RTX 5090, PP-OCRv5 mobile latin, TensorRT FP16, pool=5. Prints, handwriting, layout detection. This is the fast lane.*
 
 ### 🗺️ Roadmap
-
-- ✅ Configurable languages — all 7 bundles (Latin, Chinese, Greek, Russian, Arabic, Korean, Thai) baked into the image
 - 🔍 Structured extraction
 - 📝 Markdown output
 - 📊 Table parsing

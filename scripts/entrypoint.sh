@@ -1,17 +1,17 @@
 #!/bin/bash
 set -euo pipefail
 
-# ---- Fetch non-default language bundle on first start ----------------------
-# Latin is the only language shipped in the image (flat-layout
-# /app/models/{det,rec,cls}.onnx + /app/models/keys.txt). Every other
-# language listed below is pulled on demand from the pinned PP-OCRv5 ONNX
-# mirror into /app/models/rec/<lang>/. The Dockerfile symlinks
-# /app/models/rec → /home/ocr/.cache/turbo-ocr/models/rec so bundles land
-# in the same volume that caches TRT engines, and survive container
-# restarts.
+# ---- Validate OCR_LANG and ensure the bundle is on disk --------------------
+# The Dockerfile bakes every supported bundle at build time via
+# fetch_release_models.sh (flat /app/models/{det,rec,cls}.onnx + keys.txt
+# for Latin; /app/models/rec/<lang>/ for every other script). So in a
+# normal deployment the `[[ ! -f ]]` branch below never fires — it exists
+# as a self-heal path in case /app/models gets mounted over with an empty
+# volume, or the bundle is deleted.
 #
-# Setting OCR_SERVER=1 with OCR_LANG=chinese downloads the 84 MB server rec
-# instead of the default 16 MB mobile rec. Ignored for other languages.
+# Setting OCR_SERVER=1 with OCR_LANG=chinese selects the 84 MB server rec
+# variant instead of the default 16 MB mobile rec. Ignored for other
+# languages.
 SUPPORTED_LANGS="arabic chinese eslav greek korean latin thai"
 
 if [[ -n "${OCR_LANG:-}" && "${OCR_LANG}" != "latin" ]]; then

@@ -575,7 +575,9 @@ namespace detail {
 
 inline GrpcHandle launch_grpc_server(std::shared_ptr<OCRServiceImpl> service,
                                       int port) {
-  constexpr int kMaxMsg = 100 * 1024 * 1024;
+  int kMaxMsg = 100 * 1024 * 1024;
+  if (const char *env = std::getenv("MAX_BODY_BYTES"))
+    kMaxMsg = std::max(1, std::atoi(env));
   int cqs = 10;
   if (const char *env = std::getenv("GRPC_CQS"))
     cqs = std::max(1, std::atoi(env));

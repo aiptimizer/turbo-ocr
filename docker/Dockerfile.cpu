@@ -26,6 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libopencv-dev \
     nginx \
+    gettext-base \
     gosu \
     libgrpc++-dev \
     libc-ares-dev \

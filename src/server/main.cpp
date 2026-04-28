@@ -205,12 +205,16 @@ int main() {
   std::signal(SIGTERM, shutdown_handler);
   std::signal(SIGINT,  shutdown_handler);
 
+  size_t max_body = 100 * 1024 * 1024;
+  if (const char *env = std::getenv("MAX_BODY_BYTES"))
+    max_body = static_cast<size_t>(std::max(1, std::atoi(env)));
+
   drogon::app()
       .addListener("0.0.0.0", port)
       .setThreadNum(io_threads)
       .setIdleConnectionTimeout(120)
-      .setClientMaxBodySize(100 * 1024 * 1024)  // 100MB for large PDFs
-      .setClientMaxMemoryBodySize(100 * 1024 * 1024)
+      .setClientMaxBodySize(max_body)
+      .setClientMaxMemoryBodySize(max_body)
       .run();
 
   TOCR_LOG_INFO("HTTP server stopped, shutting down gRPC");

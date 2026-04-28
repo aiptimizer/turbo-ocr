@@ -24,7 +24,7 @@ http {
     server {
         listen 8000 backlog=4096 reuseport;
 
-        client_max_body_size 100m;
+        client_max_body_size ${MAX_BODY_SIZE};
         proxy_connect_timeout 120s;
         proxy_read_timeout 120s;
         proxy_send_timeout 120s;
@@ -38,7 +38,7 @@ http {
         error_page 504 =504 @error_504;
 
         location @error_413 {
-            return 413 '{"error":"Request body too large (max 100MB)"}';
+            return 413 '{"error":"Request body too large (max ${MAX_BODY_SIZE})"}';
         }
         location @error_502 {
             return 502 '{"error":"Backend unavailable"}';

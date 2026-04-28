@@ -29,6 +29,7 @@ services:
       - PIPELINE_POOL_SIZE=3
       # OCR_LANG=<name> to switch language (latin default, chinese baked in,
       # others downloaded on first start into the trt-cache volume).
+      # MAX_BODY_SIZE=<nginx size> to override the upload limit (default: 100m).
     ports:
       - "8001-8007:8000"
     volumes:

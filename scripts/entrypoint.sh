@@ -38,7 +38,9 @@ if [[ -n "${OCR_LANG:-}" && "${OCR_LANG}" != "latin" ]]; then
 fi
 
 # Start nginx reverse proxy (absorbs connection storms, keep-alive to Drogon)
-nginx -c /app/docker/nginx.conf
+MAX_BODY_SIZE="${MAX_BODY_SIZE:-100m}"
+envsubst '${MAX_BODY_SIZE}' < /app/docker/nginx.conf.template > /tmp/nginx.conf
+nginx -c /tmp/nginx.conf
 
 # Drop to non-root user and run the OCR server
 # TRT engines are auto-built from ONNX on first startup (cached by TRT version + model hash)

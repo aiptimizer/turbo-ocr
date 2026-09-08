@@ -9,10 +9,14 @@
 // returns it to the OS only on its own schedule:
 //
 //  - glibc parks freed blocks in per-arena free lists and auto-raises its mmap
-//    threshold as large blocks are freed, so later image-sized allocations
-//    grow the arena instead of being unmapped; RSS climbs toward a high-water
-//    mark and stays there. Fixed thresholds + a periodic malloc_trim(0)
-//    return the already-free pages between bursts.
+//    threshold as large blocks are freed, so later large allocations come from
+//    the arena instead of being mapped and unmapped. That is accepted on
+//    purpose: forcing fixed thresholds instead (3.5.3 to 3.5.5) made every
+//    multi-megabyte tensor an mmap/munmap pair, which inside a VM became a TLB
+//    shootdown storm (#34). Containment comes from three things: the arena
+//    count is capped (each arena keeps its own high-water mark), page-sized
+//    image buffers live in the host image pool outside malloc, and a periodic
+//    malloc_trim(0) returns the already-free pages of every arena.
 //  - jemalloc (commonly LD_PRELOADed on hosts that share memory with other
 //    services) keeps ~4 arenas per CPU, and an arena releases its dirty pages
 //    only when ITS decay clock advances, which happens on allocation activity
@@ -31,6 +35,7 @@
 // jemalloc work without a rebuild.
 
 #include <cstddef>
+#include <string_view>
 
 #include "turbo_ocr/decode/host_image_pool.h"
 
@@ -38,7 +43,7 @@ namespace turbo_ocr::server::bootstrap {
 
 enum class HostAllocator {
   Unknown,   // neither glibc nor jemalloc detected (musl, macOS, ...): nothing to do
-  Glibc,     // glibc malloc: mallopt tuning + malloc_trim
+  Glibc,     // glibc malloc: arena cap + periodic malloc_trim
   Jemalloc,  // jemalloc (linked or LD_PRELOADed): mallctl arena decay
 };
 
@@ -62,11 +67,30 @@ bool release_idle_host_memory(HostAllocator a) noexcept;
 void install_host_image_pool(size_t slots, size_t max_block_bytes,
                              decode::BlockMemory memory);
 
-// Process-wide setup, once at startup: applies the glibc thresholds when
-// glibc is the allocator, and starts the low-frequency reaper thread that
-// calls release_idle_host_memory() every `reaper_period_s` seconds (0
-// disables it, as does TURBO_OCR_DISABLE_MALLOC_REAPER=1 in the environment).
+// Process-wide setup, once at startup: detects the allocator and starts the
+// low-frequency reaper thread that calls release_idle_host_memory() every
+// `reaper_period_s` seconds (0 disables it, as does
+// TURBO_OCR_DISABLE_MALLOC_REAPER=1 in the environment). On glibc it also caps
+// the arena count; no mmap/trim thresholds (see the note in the implementation).
 // Returns the detected allocator for the startup log.
 HostAllocator tune_host_allocator(int reaper_period_s = 5);
+
+// The glibc arena cap tune_host_allocator() applies: the core count, at least 8.
+// Each arena keeps its own high-water mark; the default of 8 per core would let
+// a server with a few hundred threads leave that many peaks resident.
+[[nodiscard]] int glibc_arena_cap(int cores) noexcept;
+
+// CPUs this process may actually use: the affinity mask capped by the cgroup
+// CPU quota (docker --cpus, Kubernetes limits), never below 1.
+[[nodiscard]] int usable_cpus() noexcept;
+
+// cgroup v2 cpu.max text ("<quota> <period>" or "max <period>") to a CPU count,
+// rounded up; 0 when there is no quota or the text is not a quota.
+[[nodiscard]] int cpus_from_cgroup_cpu_max(std::string_view cpu_max) noexcept;
+
+// True when the operator set a valid arena count themselves (a positive integer
+// in MALLOC_ARENA_MAX, or glibc.malloc.arena_max=<n> in GLIBC_TUNABLES);
+// tune_host_allocator() then leaves it.
+[[nodiscard]] bool operator_set_arena_max() noexcept;
 
 } // namespace turbo_ocr::server::bootstrap
